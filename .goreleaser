@@ -1,12 +1,13 @@
 version: 2
+project_name: annas-cli
 
 before:
   hooks:
     - go mod tidy
     - go generate ./...
 builds:
-  - id: annas-mcp
-    main: ./cmd/annas-mcp
+  - id: annas-cli
+    main: ./cmd/annas-cli
     ldflags:
       - -extldflags "-static" -s -w -X main.commit={{.Commit}} -X main.date={{.Date}} -X main.builtBy=goreleaser -X main.Version={{.Version}} -X main.Revision={{.ShortCommit}}
     env:
@@ -29,8 +30,8 @@ builds:
       - goos: darwin
         goarch: arm
 
-  - id: annas-mcp-win
-    main: ./cmd/annas-mcp
+  - id: annas-cli-win
+    main: ./cmd/annas-cli
     ldflags:
       - -extldflags "-static" -s -w -X main.commit={{.Commit}} -X main.date={{.Date}} -X main.builtBy=goreleaser -X main.Version={{.Version}} -X main.Revision={{.ShortCommit}}
     env:
@@ -43,10 +44,12 @@ builds:
 
 archives:
   - name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
-    format: tar.xz
+    formats:
+      - tar.xz
     format_overrides:
       - goos: windows
-        format: zip
+        formats:
+          - zip
     wrap_in_directory: true
     files:
       - README.md

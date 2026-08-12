@@ -5,7 +5,7 @@ dist
 **/.DS_Store
 
 # Binaries
-/annas-mcp
+/annas-cli
 
 # Environment file
 .env

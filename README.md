@@ -1,88 +1,80 @@
-# Anna's Archive MCP Server (and CLI Tool)
+# Anna's Archive CLI
 
-[An MCP server](https://modelcontextprotocol.io/introduction) and CLI tool for searching and downloading documents (books and articles) from [Anna's Archive](https://annas-archive.gl), with optional automatic selection of a mirror reported as healthy by [SLUM](https://open-slum.org/).
+A command-line tool for searching and downloading books and articles from [Anna's Archive](https://annas-archive.gl), with an optional repository-scoped Codex skill and automatic mirror selection through [SLUM](https://open-slum.org/).
 
 > [!NOTE]
-> Notwithstanding prevailing public sentiment regarding Anna's Archive, the platform serves as a comprehensive repository for automated retrieval of documents released under permissive licensing frameworks (including Creative Commons publications and public domain materials). This software does not endorse unauthorized acquisition of copyrighted content and should be regarded solely as a utility. Users are urged to respect the intellectual property rights of authors and acknowledge the considerable effort invested in document creation.
+> This tool can retrieve permissively licensed and public-domain documents. It does not authorize acquisition of copyrighted material. Respect authors' rights and applicable law.
 
 > [!WARNING]
-> Please refer to [Mirror Selection](#mirror-selection) if any of the links lead to a non-functional Anna's Archive server.
+> See [Mirror Selection](#mirror-selection) if Anna's Archive links are unavailable.
 
 ## Requirements
 
-Search works without any required environment variables.
+Search works without configuration. Downloads require:
 
-Downloads require:
+- [Anna's Archive JSON API access](https://annas-archive.gl/donate)
+- An [Anna's Archive API key](https://annas-archive.gl/faq#api)
+- An absolute download directory
 
-- [A donation to Anna's Archive](https://annas-archive.gl/donate), which grants JSON API access
-- [An API key](https://annas-archive.gl/faq#api)
-- An MCP client, such as [Claude Desktop](https://claude.ai/download), if using the project as an MCP server
+## Install
 
-## Setup
+Download `annas-cli` from the [GitHub Releases page](https://github.com/iosifache/annas-mcp/releases), or build it from source:
 
-Download the appropriate binary from [the GitHub Releases section](https://github.com/iosifache/annas-mcp/releases).
-
-If you plan to use the tool for its MCP server functionality, you need to integrate it into your MCP client. If you are using Claude Desktop, please consider the following example configuration:
-
-```json
-"anna-mcp": {
-    "command": "/Users/iosifache/Downloads/annas-mcp",
-    "args": ["mcp"],
-    "env": {
-        "ANNAS_SECRET_KEY": "feedfacecafebeef",
-        "ANNAS_DOWNLOAD_PATH": "/Users/iosifache/Downloads",
-        "ANNAS_BASE_URL": "annas-archive.gl"
-    }
-}
+```bash
+go build -o annas-cli ./cmd/annas-cli
 ```
+
+## Use with Codex
+
+The repository contains the `$annas-archive` skill under `.agents/skills`. Launch Codex from this repository and invoke the skill explicitly, or ask to search or download a book or article from Anna's Archive. The skill uses `annas-cli` from `PATH` when installed and falls back to `go run ./cmd/annas-cli` in the source checkout.
+
+The skill is repository-scoped and is not included in release archives.
 
 ## Configuration
 
-The tool can be configured with environment variables. These variables can also be stored in an `.env` file in the folder containing the binary.
+Set variables in the environment or in an `.env` file beside the working command:
 
-### Download Environment Variables
-
-Downloads use:
-
-- `ANNAS_SECRET_KEY`: The Anna's Archive API key.
-- `ANNAS_DOWNLOAD_PATH`: The path where the documents should be downloaded.
+- `ANNAS_SECRET_KEY`: Anna's Archive API key used for downloads.
+- `ANNAS_DOWNLOAD_PATH`: Absolute directory for downloaded documents.
+- `ANNAS_BASE_URL`: Mirror hostname; defaults to `annas-archive.gl`.
+- `ANNAS_AUTO_BASE_URL`: Set to `true` to select a reachable mirror through SLUM.
 
 ### Mirror Selection
 
-Anna's Archive has multiple mirrors, and their availability can change over time. By default, this project uses `ANNAS_BASE_URL`, or `annas-archive.gl` when `ANNAS_BASE_URL` is not set.
-
-Optionally, you can set:
-
-- `ANNAS_BASE_URL`: The Anna mirror to use (defaults to `annas-archive.gl`). When automatic mirror discovery is enabled, this becomes the fallback mirror.
-- `ANNAS_AUTO_BASE_URL`: Set to `true` to discover the best available Anna mirror automatically from [SLUM](https://open-slum.org/).
-
-Automatic discovery is opt-in: when `ANNAS_AUTO_BASE_URL=true`, the tool reads the public status page, ranks discovered Anna mirror candidates by recent health and latency, probes them locally, and uses the best reachable mirror. If discovery or probing fails, the tool falls back to `ANNAS_BASE_URL`, then to the built-in default mirror.
+Automatic discovery is opt-in. When `ANNAS_AUTO_BASE_URL=true`, the CLI ranks Anna's Archive mirrors by recent health and latency, probes them locally, and selects the best reachable mirror. If discovery fails, it falls back to `ANNAS_BASE_URL`, then the built-in default.
 
 ### Timeouts
 
-HTTP requests default to a 1 hour timeout. For CLI usage, override this with `--timeout`, for example:
+HTTP requests default to one hour. Override the timeout with a persistent flag:
 
 ```bash
-annas-mcp --timeout 1h book-download abc123def456 "my-book.pdf"
+annas-cli --timeout 30m book-search "machine learning"
 ```
 
-For MCP usage, tools accept an optional `timeout_seconds` parameter, for example `3600` for 1 hour.
+## Output
 
-## Demo
+Operational commands emit one JSON object to stdout. Search responses contain arrays even when no results are found:
 
-### As an MCP Server
+```json
+{"operation":"book-search","data":{"query":"machine learning","books":[]}}
+```
 
-<img src="screenshots/claude.png" width="600px"/>
+Downloads report the exact created path. Article downloads also report whether the fast-download API or SciDB fallback succeeded.
 
-### As a CLI Tool
+Use `--human` for human-readable output:
 
-<img src="screenshots/cli.png" width="400px"/>
+```bash
+annas-cli --human article-search "10.1038/nature12345"
+```
 
-## Available Operations
+Errors return a nonzero status and write diagnostics to stderr.
 
-| Operation                                      | MCP Tool           | CLI Command         | Example                                                      |
-| ---------------------------------------------- | ------------------ | ------------------- | ------------------------------------------------------------ |
-| Search for books by title, author, or topic   | `book_search`      | `book-search`       | `book-search "machine learning python"`                     |
-| Download a book by its MD5 hash                | `book_download`    | `book-download`     | `book-download abc123def456 "my-book.pdf"`                  |
-| Search for articles by DOI or keywords        | `article_search`   | `article-search`    | `article-search "10.1038/nature12345"` or `article-search "neural networks"` |
-| Download an article by its DOI                 | `article_download` | `article-download`  | `article-download "10.1038/nature12345"`                    |
+## Commands
+
+| Operation | Command | Example |
+| --- | --- | --- |
+| Search for books | `book-search` | `annas-cli book-search "machine learning python"` |
+| Download a book by MD5 | `book-download` | `annas-cli book-download abc123def456 "my-book.pdf"` |
+| Search for articles | `article-search` | `annas-cli article-search "neural networks"` |
+| Look up an article by DOI | `article-search` | `annas-cli article-search "10.1038/nature12345"` |
+| Download an article by DOI | `article-download` | `annas-cli article-download "10.1038/nature12345"` |

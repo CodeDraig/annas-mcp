@@ -1,0 +1,4 @@
+interface:
+  display_name: "Anna's Archive CLI"
+  short_description: "Search and download via annas-cli"
+  default_prompt: "Use $annas-archive to search Anna's Archive for a book or article."

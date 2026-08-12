@@ -337,7 +337,7 @@ func FindArticle(query string, timeout time.Duration) ([]*Paper, error) {
 	return paperListParsed, nil
 }
 
-func (b *Book) Download(secretKey, folderPath string, timeout time.Duration) error {
+func (b *Book) Download(secretKey, folderPath string, timeout time.Duration) (string, error) {
 	l := logger.GetLogger()
 
 	annasBaseURL := env.GetAnnasBaseURL()
@@ -354,7 +354,7 @@ func (b *Book) Download(secretKey, folderPath string, timeout time.Duration) err
 
 	resp, err := client.Get(apiURL)
 	if err != nil {
-		return fmt.Errorf("failed to fetch download URL: %w", err)
+		return "", errors.New("failed to fetch download URL")
 	}
 	defer resp.Body.Close()
 
@@ -362,21 +362,21 @@ func (b *Book) Download(secretKey, folderPath string, timeout time.Duration) err
 	if resp.StatusCode != http.StatusOK {
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 512))
 		if readErr != nil {
-			return fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, resp.Status)
+			return "", fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, resp.Status)
 		}
-		return fmt.Errorf("API request failed with status %d: %s (body: %s)", resp.StatusCode, resp.Status, string(body))
+		return "", fmt.Errorf("API request failed with status %d: %s (body: %s)", resp.StatusCode, resp.Status, string(body))
 	}
 
 	var apiResp fastDownloadResponse
 	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
-		return fmt.Errorf("failed to decode API response: %w", err)
+		return "", fmt.Errorf("failed to decode API response: %w", err)
 	}
 
 	if apiResp.DownloadURL == "" {
 		if apiResp.Error != "" {
-			return fmt.Errorf("API error: %s", apiResp.Error)
+			return "", fmt.Errorf("API error: %s", apiResp.Error)
 		}
-		return errors.New("API returned empty download URL")
+		return "", errors.New("API returned empty download URL")
 	}
 
 	// Second API call: download the file
@@ -384,13 +384,13 @@ func (b *Book) Download(secretKey, folderPath string, timeout time.Duration) err
 
 	downloadResp, err := client.Get(apiResp.DownloadURL)
 	if err != nil {
-		return fmt.Errorf("failed to download file: %w", err)
+		return "", fmt.Errorf("failed to download file: %w", err)
 	}
 	defer downloadResp.Body.Close()
 
 	// Validate download status code
 	if downloadResp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download failed with status %d: %s", downloadResp.StatusCode, downloadResp.Status)
+		return "", fmt.Errorf("download failed with status %d: %s", downloadResp.StatusCode, downloadResp.Status)
 	}
 
 	// Sanitize filename to prevent path traversal and invalid characters
@@ -412,7 +412,7 @@ func (b *Book) Download(secretKey, folderPath string, timeout time.Duration) err
 	// Create the file
 	out, err := os.Create(filePath)
 	if err != nil {
-		return fmt.Errorf("failed to create file: %w", err)
+		return "", fmt.Errorf("failed to create file: %w", err)
 	}
 
 	// Setup cleanup on error
@@ -433,12 +433,12 @@ func (b *Book) Download(secretKey, folderPath string, timeout time.Duration) err
 	// Copy the downloaded content
 	written, err := io.Copy(out, downloadResp.Body)
 	if err != nil {
-		return fmt.Errorf("failed to write file (wrote %d bytes): %w", written, err)
+		return "", fmt.Errorf("failed to write file (wrote %d bytes): %w", written, err)
 	}
 
 	// Sync to disk to ensure data is written
 	if err := out.Sync(); err != nil {
-		return fmt.Errorf("failed to sync file to disk: %w", err)
+		return "", fmt.Errorf("failed to sync file to disk: %w", err)
 	}
 
 	success = true
@@ -447,7 +447,7 @@ func (b *Book) Download(secretKey, folderPath string, timeout time.Duration) err
 		zap.Int64("bytes", written),
 	)
 
-	return nil
+	return filePath, nil
 }
 
 func LookupDOI(doi string, timeout time.Duration) (*Paper, error) {
@@ -563,11 +563,11 @@ func LookupDOI(doi string, timeout time.Duration) (*Paper, error) {
 	return paper, nil
 }
 
-func (p *Paper) Download(folderPath string, timeout time.Duration) error {
+func (p *Paper) Download(folderPath string, timeout time.Duration) (string, error) {
 	l := logger.GetLogger()
 
 	if p.DownloadURL == "" {
-		return errors.New("no download URL available for this paper")
+		return "", errors.New("no download URL available for this paper")
 	}
 
 	annasBaseURL := env.GetAnnasBaseURL()
@@ -586,22 +586,22 @@ func (p *Paper) Download(folderPath string, timeout time.Duration) error {
 
 	req, err := http.NewRequest("GET", downloadURL, nil)
 	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("User-Agent", BrowserUserAgent)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to download paper: %w", err)
+		return "", fmt.Errorf("failed to download paper: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 512))
 		if readErr != nil {
-			return fmt.Errorf("download failed with status %d: %s", resp.StatusCode, resp.Status)
+			return "", fmt.Errorf("download failed with status %d: %s", resp.StatusCode, resp.Status)
 		}
-		return fmt.Errorf("download failed with status %d: %s (body: %s)", resp.StatusCode, resp.Status, string(body))
+		return "", fmt.Errorf("download failed with status %d: %s (body: %s)", resp.StatusCode, resp.Status, string(body))
 	}
 
 	// Infer file extension from Content-Disposition or Content-Type
@@ -637,7 +637,7 @@ func (p *Paper) Download(folderPath string, timeout time.Duration) error {
 
 	out, err := os.Create(filePath)
 	if err != nil {
-		return fmt.Errorf("failed to create file: %w", err)
+		return "", fmt.Errorf("failed to create file: %w", err)
 	}
 
 	success := false
@@ -655,11 +655,11 @@ func (p *Paper) Download(folderPath string, timeout time.Duration) error {
 
 	written, err := io.Copy(out, resp.Body)
 	if err != nil {
-		return fmt.Errorf("failed to write file (wrote %d bytes): %w", written, err)
+		return "", fmt.Errorf("failed to write file (wrote %d bytes): %w", written, err)
 	}
 
 	if err := out.Sync(); err != nil {
-		return fmt.Errorf("failed to sync file to disk: %w", err)
+		return "", fmt.Errorf("failed to sync file to disk: %w", err)
 	}
 
 	success = true
@@ -668,7 +668,7 @@ func (p *Paper) Download(folderPath string, timeout time.Duration) error {
 		zap.Int64("bytes", written),
 	)
 
-	return nil
+	return filePath, nil
 }
 
 func (b *Book) String() string {

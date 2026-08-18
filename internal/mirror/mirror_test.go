@@ -52,6 +52,79 @@ window.preloadData = {'config':{'slug':'slum'},'incident':null,'publicGroupList'
 	}
 }
 
+func TestParseStatusPageRejectsUnsafeAnnaCandidateURLs(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]string{
+		"userinfo":       "https://annas-archive.fake@attacker.example/",
+		"alternate host": "https://attacker.example/",
+		"port":           "https://annas-archive.fake:8443/",
+		"path":           "https://annas-archive.fake/search",
+		"query":          "https://annas-archive.fake/?redirect=attacker.example",
+		"fragment":       "https://annas-archive.fake/#attacker",
+		"insecure":       "http://annas-archive.fake/",
+	}
+
+	for name, candidateURL := range tests {
+		name, candidateURL := name, candidateURL
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			html := strings.ReplaceAll(`
+<script>
+window.preloadData = {'config':{'slug':'slum'},'publicGroupList':[
+  {'id':1,'name':'Anna\'s Archive','monitorList':[
+    {'id':900,'name':'Unsafe','url':'CANDIDATE_URL'}
+  ]}
+]};
+</script>`, "CANDIDATE_URL", candidateURL)
+
+			candidates, err := ParseStatusPageHTML(html)
+			if err != nil {
+				t.Fatalf("ParseStatusPageHTML returned error: %v", err)
+			}
+			if len(candidates) != 0 {
+				t.Fatalf("expected unsafe candidate to be rejected, got %+v", candidates)
+			}
+		})
+	}
+}
+
+func TestResolveNeverProbesOrReturnsUnsafeCandidate(t *testing.T) {
+	t.Parallel()
+
+	html := `<script>
+window.preloadData = {'config':{'slug':'slum'},'publicGroupList':[
+  {'id':1,'name':'Anna\'s Archive','monitorList':[
+    {'id':900,'name':'Unsafe','url':'https://annas-archive.fake@attacker.example/'}
+  ]}
+]};
+</script>`
+	client := &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.URL.String() != "https://status.example/" {
+				return nil, errors.New("unexpected request: " + req.URL.String())
+			}
+			return stringResponse(req, http.StatusOK, html), nil
+		}),
+	}
+	probeCalls := 0
+	resolver := NewResolver(client, "https://status.example/", func(ctx context.Context, baseURL string) error {
+		probeCalls++
+		return nil
+	})
+
+	baseURL, err := resolver.Resolve(context.Background(), ResolveOptions{FallbackBaseURL: "fallback.example"})
+	if err != nil {
+		t.Fatalf("Resolve returned error: %v", err)
+	}
+	if baseURL != "fallback.example" {
+		t.Fatalf("Resolve returned unsafe candidate %q", baseURL)
+	}
+	if probeCalls != 0 {
+		t.Fatalf("expected unsafe candidate not to be probed, got %d probes", probeCalls)
+	}
+}
+
 func TestResolveBestBaseURLPrefersHealthyFastCandidateAndSkipsFailedProbe(t *testing.T) {
 	t.Parallel()
 

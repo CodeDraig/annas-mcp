@@ -103,6 +103,17 @@ func sanitizeFilename(filename string) string {
 	return safe
 }
 
+func createDownloadFile(filePath string) (*os.File, error) {
+	out, err := os.OpenFile(filePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666)
+	if errors.Is(err, os.ErrExist) {
+		return nil, fmt.Errorf("destination already exists: %s", filePath)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to create file: %w", err)
+	}
+	return out, nil
+}
+
 func FindBook(query string, timeout time.Duration) ([]*Book, error) {
 	l := logger.GetLogger()
 
@@ -340,7 +351,7 @@ func FindArticle(query string, timeout time.Duration) ([]*Paper, error) {
 func (b *Book) Download(secretKey, folderPath string, timeout time.Duration) (string, error) {
 	l := logger.GetLogger()
 
-	annasBaseURL := env.GetAnnasBaseURL()
+	annasBaseURL := env.GetAuthenticatedAnnasBaseURL()
 
 	// Create HTTP client with timeout
 	client := &http.Client{
@@ -409,10 +420,10 @@ func (b *Book) Download(secretKey, folderPath string, timeout time.Duration) (st
 
 	l.Info("Creating file", zap.String("path", filePath))
 
-	// Create the file
-	out, err := os.Create(filePath)
+	// Create a new file without replacing an existing download.
+	out, err := createDownloadFile(filePath)
 	if err != nil {
-		return "", fmt.Errorf("failed to create file: %w", err)
+		return "", err
 	}
 
 	// Setup cleanup on error
@@ -635,9 +646,9 @@ func (p *Paper) Download(folderPath string, timeout time.Duration) (string, erro
 
 	l.Info("Creating file", zap.String("path", filePath))
 
-	out, err := os.Create(filePath)
+	out, err := createDownloadFile(filePath)
 	if err != nil {
-		return "", fmt.Errorf("failed to create file: %w", err)
+		return "", err
 	}
 
 	success := false

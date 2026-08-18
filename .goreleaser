@@ -9,7 +9,7 @@ builds:
   - id: annas-cli
     main: ./cmd/annas-cli
     ldflags:
-      - -extldflags "-static" -s -w -X main.commit={{.Commit}} -X main.date={{.Date}} -X main.builtBy=goreleaser -X main.Version={{.Version}} -X main.Revision={{.ShortCommit}}
+      - -extldflags "-static" -s -w -X github.com/iosifache/annas-mcp/internal/version.version={{.Version}}
     env:
       - CGO_ENABLED=0
     goos:
@@ -33,7 +33,7 @@ builds:
   - id: annas-cli-win
     main: ./cmd/annas-cli
     ldflags:
-      - -extldflags "-static" -s -w -X main.commit={{.Commit}} -X main.date={{.Date}} -X main.builtBy=goreleaser -X main.Version={{.Version}} -X main.Revision={{.ShortCommit}}
+      - -extldflags "-static" -s -w -X github.com/iosifache/annas-mcp/internal/version.version={{.Version}}
     env:
       - CGO_ENABLED=0
     goos:

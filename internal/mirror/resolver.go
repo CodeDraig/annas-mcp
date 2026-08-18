@@ -27,7 +27,8 @@ const (
 var (
 	slugRegex            = regexp.MustCompile(`['"]slug['"]\s*:\s*['"]([^'"]+)['"]`)
 	candidateObjectRegex = regexp.MustCompile(`(?s)\{[^{}]*['"]id['"]\s*:\s*([0-9]+)[^{}]*['"]url['"]\s*:\s*['"]([^'"]+)['"][^{}]*\}`)
-	fallbackURLRegex     = regexp.MustCompile(`https://annas-archive\.[a-z0-9-]+/?`)
+	fallbackURLRegex     = regexp.MustCompile(`(?:^|[\s'"<>=])(https://annas-archive\.[a-z0-9-]+/?)(?:$|[\s'"<>])`)
+	candidateHostRegex   = regexp.MustCompile(`^annas-archive\.[a-z0-9-]+$`)
 )
 
 type Heartbeat struct {
@@ -315,12 +316,18 @@ func parseCandidatesFromAnnaGroup(html string) ([]Candidate, error) {
 }
 
 func parseCandidatesByURLFallback(html string) []Candidate {
-	matches := fallbackURLRegex.FindAllString(html, -1)
+	matches := fallbackURLRegex.FindAllStringSubmatch(html, -1)
 	seen := make(map[string]struct{})
 	candidates := make([]Candidate, 0, len(matches))
 
 	for _, match := range matches {
-		baseURL := NormalizeBaseURL(match)
+		if len(match) != 2 {
+			continue
+		}
+		baseURL, ok := validateCandidateURL(match[1])
+		if !ok {
+			continue
+		}
 		if _, exists := seen[baseURL]; exists {
 			continue
 		}
@@ -344,8 +351,8 @@ func parseCandidatesFromSection(section string) []Candidate {
 			continue
 		}
 
-		baseURL := NormalizeBaseURL(match[2])
-		if !strings.HasPrefix(baseURL, "annas-archive.") {
+		baseURL, ok := validateCandidateURL(match[2])
+		if !ok {
 			continue
 		}
 
@@ -357,11 +364,34 @@ func parseCandidatesFromSection(section string) []Candidate {
 		candidates = append(candidates, Candidate{
 			MonitorID: mustAtoi(match[1]),
 			BaseURL:   baseURL,
-			SourceURL: match[2],
+			SourceURL: "https://" + baseURL + "/",
 		})
 	}
 
 	return candidates
+}
+
+func validateCandidateURL(raw string) (string, bool) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Scheme != "https" || parsed.User != nil || parsed.Opaque != "" {
+		return "", false
+	}
+
+	hostname := strings.ToLower(parsed.Hostname())
+	if hostname == "" || !candidateHostRegex.MatchString(hostname) {
+		return "", false
+	}
+	if parsed.Port() != "" || !strings.EqualFold(parsed.Host, parsed.Hostname()) {
+		return "", false
+	}
+	if parsed.Path != "" && parsed.Path != "/" {
+		return "", false
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", false
+	}
+
+	return hostname, true
 }
 
 func applyHeartbeats(candidates []Candidate, heartbeatList map[string][]Heartbeat) []Candidate {

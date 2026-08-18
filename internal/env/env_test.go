@@ -100,6 +100,56 @@ func TestGetAnnasBaseURLFallsBackWhenAutoResolverFails(t *testing.T) {
 	}
 }
 
+func TestGetAuthenticatedAnnasBaseURLIgnoresAutomaticMirror(t *testing.T) {
+	t.Setenv("ANNAS_AUTO_BASE_URL", "true")
+	t.Setenv("ANNAS_BASE_URL", "trusted.example")
+	resetResolvedEnvForTests()
+
+	resolverCalls := int32(0)
+	resolveAnnasBaseURL = func() (string, error) {
+		atomic.AddInt32(&resolverCalls, 1)
+		return "annas-archive.xyz", nil
+	}
+	t.Cleanup(func() {
+		resolveAnnasBaseURL = defaultResolveAnnasBaseURL
+		resetResolvedEnvForTests()
+	})
+
+	publicBaseURL := GetAnnasBaseURL()
+	if publicBaseURL != "annas-archive.xyz" {
+		t.Fatalf("expected automatic public mirror, got %q", publicBaseURL)
+	}
+
+	baseURL := GetAuthenticatedAnnasBaseURL()
+	if baseURL != "trusted.example" {
+		t.Fatalf("expected trusted.example, got %q", baseURL)
+	}
+	if atomic.LoadInt32(&resolverCalls) != 1 {
+		t.Fatalf("expected only public selection to invoke resolver, got %d calls", resolverCalls)
+	}
+}
+
+func TestGetAuthenticatedAnnasBaseURLUsesDefaultWithoutConfiguration(t *testing.T) {
+	t.Setenv("ANNAS_AUTO_BASE_URL", "true")
+	t.Setenv("ANNAS_BASE_URL", "")
+	resetResolvedEnvForTests()
+
+	resolveAnnasBaseURL = func() (string, error) {
+		return "annas-archive.xyz", nil
+	}
+	t.Cleanup(func() {
+		resolveAnnasBaseURL = defaultResolveAnnasBaseURL
+		resetResolvedEnvForTests()
+	})
+
+	if publicBaseURL := GetAnnasBaseURL(); publicBaseURL != "annas-archive.xyz" {
+		t.Fatalf("expected automatic public mirror, got %q", publicBaseURL)
+	}
+	if baseURL := GetAuthenticatedAnnasBaseURL(); baseURL != DefaultAnnasBaseURL {
+		t.Fatalf("expected %q, got %q", DefaultAnnasBaseURL, baseURL)
+	}
+}
+
 func TestGetEnvUsesSelectedBaseURL(t *testing.T) {
 	t.Setenv("ANNAS_SECRET_KEY", "secret")
 	t.Setenv("ANNAS_DOWNLOAD_PATH", t.TempDir())

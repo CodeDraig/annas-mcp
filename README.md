@@ -36,12 +36,12 @@ Set variables in the environment or in an `.env` file beside the working command
 
 - `ANNAS_SECRET_KEY`: Anna's Archive API key used for downloads.
 - `ANNAS_DOWNLOAD_PATH`: Absolute directory for downloaded documents.
-- `ANNAS_BASE_URL`: Mirror hostname; defaults to `annas-archive.gl`.
+- `ANNAS_BASE_URL`: Trusted mirror hostname used for API-key-authenticated downloads and as the public-request fallback; defaults to `annas-archive.gl`.
 - `ANNAS_AUTO_BASE_URL`: Set to `true` to select a reachable mirror through SLUM.
 
 ### Mirror Selection
 
-Automatic discovery is opt-in. When `ANNAS_AUTO_BASE_URL=true`, the CLI ranks Anna's Archive mirrors by recent health and latency, probes them locally, and selects the best reachable mirror. If discovery fails, it falls back to `ANNAS_BASE_URL`, then the built-in default.
+Automatic discovery is opt-in. When `ANNAS_AUTO_BASE_URL=true`, the CLI ranks Anna's Archive mirrors by recent health and latency, probes them locally, and selects the best reachable mirror for public search, DOI, and SciDB requests. If discovery fails, it falls back to `ANNAS_BASE_URL`, then the built-in default. API-key-authenticated fast-download requests never use an automatically discovered mirror; they use `ANNAS_BASE_URL` or the built-in default.
 
 ### Timeouts
 
@@ -59,7 +59,7 @@ Operational commands emit one JSON object to stdout. Search responses contain ar
 {"operation":"book-search","data":{"query":"machine learning","books":[]}}
 ```
 
-Downloads report the exact created path. Article downloads also report whether the fast-download API or SciDB fallback succeeded.
+Downloads report the exact created path and fail without changing the destination if that path already exists. Article downloads also report whether the fast-download API or SciDB fallback succeeded.
 
 Use `--human` for human-readable output:
 

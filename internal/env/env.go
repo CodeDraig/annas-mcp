@@ -63,6 +63,16 @@ func GetAnnasBaseURL() string {
 	return DefaultAnnasBaseURL
 }
 
+// GetAuthenticatedAnnasBaseURL returns only an operator-configured host or the
+// built-in default. Automatically discovered mirrors are suitable for public
+// requests, but they must never receive ANNAS_SECRET_KEY.
+func GetAuthenticatedAnnasBaseURL() string {
+	if configuredBaseURL := normalizeBaseURL(os.Getenv("ANNAS_BASE_URL")); configuredBaseURL != "" {
+		return configuredBaseURL
+	}
+	return DefaultAnnasBaseURL
+}
+
 func GetEnv() (*Env, error) {
 	l := logger.GetLogger()
 

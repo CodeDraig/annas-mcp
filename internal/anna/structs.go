@@ -1,6 +1,9 @@
 package anna
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 type Book struct {
 	Language  string `json:"language"`
@@ -25,12 +28,20 @@ type Paper struct {
 	PageURL     string `json:"page_url"`
 }
 
+func (b *Book) String() string {
+	return fmt.Sprintf("Title: %s\nAuthors: %s\nPublisher: %s\nLanguage: %s\nFormat: %s\nSize: %s\nURL: %s\nHash: %s",
+		b.Title, b.Authors, b.Publisher, b.Language, b.Format, b.Size, b.URL, b.Hash)
+}
+
+func (b *Book) ToJSON() (string, error) {
+	data, err := json.MarshalIndent(b, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
 func (p *Paper) String() string {
 	return fmt.Sprintf("DOI: %s\nTitle: %s\nAuthors: %s\nJournal: %s\nSize: %s\nHash: %s\nDownload URL: %s\nSci-Hub: %s\nPage: %s",
 		p.DOI, p.Title, p.Authors, p.Journal, p.Size, p.Hash, p.DownloadURL, p.SciHubURL, p.PageURL)
-}
-
-type fastDownloadResponse struct {
-	DownloadURL string `json:"download_url"`
-	Error       string `json:"error"`
 }

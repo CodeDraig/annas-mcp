@@ -22,7 +22,7 @@ for later work and are not implemented as part of the ACT-NOW corrections.
 ## [DEFER] Return asynchronous search transport failures
 
 - **Status:** Open.
-- **Location:** `internal/anna/anna.go`, `FindBook` and `FindArticle`
+- **Location:** `internal/anna/search.go`, `FindBook` and `FindArticle`
 - **Evidence:** Both collectors use `colly.Async(true)`; their `OnError`
   callbacks only log, and `Wait` returns no error. A failed request can therefore
   become a successful empty result.

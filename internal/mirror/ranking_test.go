@@ -1,49 +1,32 @@
 package mirror
 
-import (
-	"testing"
-	"time"
-)
+import "testing"
 
-func TestCandidateScoreUsesRecentHeartbeatQuality(t *testing.T) {
-	t.Parallel()
-
-	now := time.Date(2026, 3, 23, 11, 0, 0, 0, time.UTC)
-	candidate := Candidate{
-		BaseURL: "annas-archive.good",
-		Heartbeats: []Heartbeat{
-			{Status: 1, Ping: 200, Time: now.Add(-2 * time.Minute)},
-			{Status: 1, Ping: 100, Time: now.Add(-1 * time.Minute)},
-			{Status: 0, Ping: 0, Time: now},
-		},
-	}
-
-	score := candidate.Score()
-	if score.SuccessCount != 2 {
-		t.Fatalf("expected 2 successful heartbeats, got %d", score.SuccessCount)
-	}
-	if score.LastStatus != 0 {
-		t.Fatalf("expected last status 0, got %d", score.LastStatus)
-	}
-	if score.AveragePing != 150 {
-		t.Fatalf("expected average ping 150, got %d", score.AveragePing)
-	}
-}
-
-func TestRankCandidatesFiltersDownAndOrdersHealthyCandidates(t *testing.T) {
+func TestRankCandidatesUsesStatusThenLatestLatency(t *testing.T) {
 	t.Parallel()
 
 	candidates := []Candidate{
-		{BaseURL: "annas-archive.down", Heartbeats: []Heartbeat{{Status: 0, Ping: 0}}},
-		{BaseURL: "annas-archive.slow", Heartbeats: []Heartbeat{{Status: 1, Ping: 500}}},
-		{BaseURL: "annas-archive.fast", Heartbeats: []Heartbeat{{Status: 1, Ping: 100}}},
-		{BaseURL: "annas-archive.unknown"},
+		{BaseURL: "annas-archive.protected", Status: StatusProtected, LatencyMillis: 10},
+		{BaseURL: "annas-archive.degraded", Status: StatusDegraded, LatencyMillis: 20},
+		{BaseURL: "annas-archive.slow", Status: StatusUp, LatencyMillis: 500},
+		{BaseURL: "annas-archive.fast", Status: StatusUp, LatencyMillis: 100},
+		{BaseURL: "annas-archive.unknown-latency", Status: StatusUp},
+		{BaseURL: "annas-archive.down", Status: StatusDown, LatencyMillis: 1},
+		{BaseURL: "annas-archive.unknown", Status: StatusUnknown, LatencyMillis: 1},
+		{BaseURL: "annas-archive.timeout", Status: StatusTimeout, LatencyMillis: 1},
 	}
+
 	ranked := rankCandidates(candidates)
-	if len(ranked) != 3 {
-		t.Fatalf("rankCandidates returned %d candidates", len(ranked))
+	want := []string{
+		"annas-archive.fast",
+		"annas-archive.slow",
+		"annas-archive.unknown-latency",
+		"annas-archive.degraded",
+		"annas-archive.protected",
 	}
-	want := []string{"annas-archive.fast", "annas-archive.slow", "annas-archive.unknown"}
+	if len(ranked) != len(want) {
+		t.Fatalf("rankCandidates returned %d candidates, want %d", len(ranked), len(want))
+	}
 	for index, baseURL := range want {
 		if ranked[index].BaseURL != baseURL {
 			t.Fatalf("ranked[%d] = %q, want %q", index, ranked[index].BaseURL, baseURL)

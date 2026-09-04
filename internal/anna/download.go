@@ -1,6 +1,8 @@
 package anna
 
 import (
+	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -121,15 +123,36 @@ func paperDownloadPath(folderPath string, paper *Paper, header http.Header) stri
 	return filepath.Join(folderPath, safeName+ext)
 }
 
-func (b *Book) Download(secretKey, folderPath string, timeout time.Duration) (string, error) {
+func authenticatedDownloadClient(timeout time.Duration) *http.Client {
+	return &http.Client{Timeout: timeout, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		// Go otherwise includes the key-bearing API URL in Referer.
+		req.Header.Del("Referer")
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		origin := via[0].URL
+		if req.URL.Scheme != "https" || !strings.EqualFold(req.URL.Host, origin.Host) || req.URL.User != nil {
+			return errors.New("authenticated redirect leaves the configured HTTPS origin")
+		}
+		return nil
+	}}
+}
+
+func (b *Book) Download(ctx context.Context, secretKey, folderPath string, timeout time.Duration) (string, error) {
 	l := logger.GetLogger()
-	annasBaseURL := env.GetAuthenticatedAnnasBaseURL()
-	client := &http.Client{Timeout: timeout}
+	annasBaseURL, err := env.GetAuthenticatedAnnasBaseURL()
+	if err != nil {
+		return "", fmt.Errorf("failed to load authenticated Anna configuration: %w", err)
+	}
+	client := authenticatedDownloadClient(timeout)
 
 	apiURL := fmt.Sprintf(AnnasDownloadEndpointFormat, annasBaseURL, b.Hash, secretKey)
 	l.Info("Fetching download URL", zap.String("hash", b.Hash))
-	resp, err := client.Get(apiURL)
+	resp, err := downloadRequest(ctx, client, apiURL)
 	if err != nil {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
 		return "", errors.New("failed to fetch download URL")
 	}
 	defer resp.Body.Close()
@@ -153,7 +176,8 @@ func (b *Book) Download(secretKey, folderPath string, timeout time.Duration) (st
 	}
 
 	l.Info("Downloading file", zap.String("url", apiResp.DownloadURL))
-	downloadResp, err := client.Get(apiResp.DownloadURL)
+	// File delivery may use another host; it never inherits the API request URL.
+	downloadResp, err := downloadRequest(ctx, &http.Client{Timeout: timeout}, apiResp.DownloadURL)
 	if err != nil {
 		return "", fmt.Errorf("failed to download file: %w", err)
 	}
@@ -164,16 +188,23 @@ func (b *Book) Download(secretKey, folderPath string, timeout time.Duration) (st
 
 	filePath := bookDownloadPath(folderPath, b)
 	l.Info("Creating file", zap.String("path", filePath))
-	return persistDownload(filePath, downloadResp.Body, l, "Download completed successfully")
+	body, err := validateDownloadBody(downloadResp, b.Format)
+	if err != nil {
+		return "", err
+	}
+	return persistDownload(filePath, body, l, "Download completed successfully")
 }
 
-func (p *Paper) Download(folderPath string, timeout time.Duration) (string, error) {
+func (p *Paper) Download(ctx context.Context, folderPath string, timeout time.Duration) (string, error) {
 	l := logger.GetLogger()
 	if p.DownloadURL == "" {
 		return "", errors.New("no download URL available for this paper")
 	}
 
-	annasBaseURL := env.GetAnnasBaseURL()
+	annasBaseURL, err := env.GetAnnasBaseURL(ctx, timeout)
+	if err != nil {
+		return "", fmt.Errorf("failed to load Anna configuration: %w", err)
+	}
 	downloadURL := p.DownloadURL
 	if !strings.HasPrefix(downloadURL, "http") {
 		downloadURL = fmt.Sprintf("https://%s%s", annasBaseURL, downloadURL)
@@ -181,7 +212,7 @@ func (p *Paper) Download(folderPath string, timeout time.Duration) (string, erro
 	client := &http.Client{Timeout: timeout}
 
 	l.Info("Downloading paper via SciDB", zap.String("url", downloadURL))
-	req, err := http.NewRequest("GET", downloadURL, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", downloadURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
@@ -201,5 +232,35 @@ func (p *Paper) Download(folderPath string, timeout time.Duration) (string, erro
 
 	filePath := paperDownloadPath(folderPath, p, resp.Header)
 	l.Info("Creating file", zap.String("path", filePath))
-	return persistDownload(filePath, resp.Body, l, "Paper download completed successfully")
+	body, err := validateDownloadBody(resp, "pdf")
+	if err != nil {
+		return "", err
+	}
+	return persistDownload(filePath, body, l, "Paper download completed successfully")
+}
+
+func downloadRequest(ctx context.Context, client *http.Client, rawURL string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	return client.Do(req)
+}
+
+// Peek retains every inspected byte for persistence, without buffering the file.
+func validateDownloadBody(response *http.Response, format string) (io.Reader, error) {
+	body := bufio.NewReaderSize(response.Body, 4096)
+	prefix, err := body.Peek(4096)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("inspect download: %w", err)
+	}
+	text := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(string(prefix), "\ufeff")))
+	contentType, _, _ := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	sniffedType, _, _ := mime.ParseMediaType(http.DetectContentType([]byte(text)))
+	html := contentType == "text/html" || contentType == "application/xhtml+xml" || sniffedType == "text/html"
+	explicitText := strings.EqualFold(format, "txt") || strings.EqualFold(format, "html") || strings.EqualFold(format, "htm")
+	if html && !explicitText {
+		return nil, errors.New("download returned an HTML page instead of a document")
+	}
+	return body, nil
 }

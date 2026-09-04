@@ -1,77 +1,45 @@
 package mirror
 
-import (
-	"fmt"
-	"sort"
-)
-
-func (c Candidate) Score() CandidateScore {
-	score := CandidateScore{
-		SampleCount: len(c.Heartbeats),
-		LastStatus:  -1,
-	}
-
-	var pingSum int64
-	for idx, heartbeat := range c.Heartbeats {
-		if idx == len(c.Heartbeats)-1 {
-			score.LastStatus = heartbeat.Status
-		}
-		if heartbeat.Status == 1 {
-			score.SuccessCount++
-			pingSum += heartbeat.Ping
-		}
-	}
-	if score.SuccessCount > 0 {
-		score.AveragePing = pingSum / int64(score.SuccessCount)
-	}
-	return score
-}
-
-func applyHeartbeats(candidates []Candidate, heartbeatList map[string][]Heartbeat) []Candidate {
-	enriched := make([]Candidate, 0, len(candidates))
-	for _, candidate := range candidates {
-		if candidate.MonitorID > 0 {
-			candidate.Heartbeats = heartbeatList[fmt.Sprintf("%d", candidate.MonitorID)]
-		}
-		enriched = append(enriched, candidate)
-	}
-	return enriched
-}
+import "sort"
 
 func rankCandidates(candidates []Candidate) []Candidate {
-	filtered := make([]Candidate, 0, len(candidates))
+	ranked := make([]Candidate, 0, len(candidates))
 	for _, candidate := range candidates {
-		score := candidate.Score()
-		if score.LastStatus == 1 || score.SampleCount == 0 {
-			filtered = append(filtered, candidate)
+		switch candidate.Status {
+		case StatusUp, StatusDegraded, StatusProtected:
+			ranked = append(ranked, candidate)
 		}
 	}
 
-	sort.SliceStable(filtered, func(i, j int) bool {
-		left := filtered[i].Score()
-		right := filtered[j].Score()
-		if left.SampleCount == 0 || right.SampleCount == 0 {
-			if left.SampleCount != right.SampleCount {
-				return left.SampleCount > right.SampleCount
+	sort.SliceStable(ranked, func(i, j int) bool {
+		left := ranked[i]
+		right := ranked[j]
+		if statusRank(left.Status) != statusRank(right.Status) {
+			return statusRank(left.Status) < statusRank(right.Status)
+		}
+		if left.LatencyMillis == 0 || right.LatencyMillis == 0 {
+			if left.LatencyMillis != right.LatencyMillis {
+				return left.LatencyMillis != 0
 			}
-			return filtered[i].BaseURL < filtered[j].BaseURL
+			return left.BaseURL < right.BaseURL
 		}
-		leftRate := successRate(left)
-		rightRate := successRate(right)
-		if leftRate != rightRate {
-			return leftRate > rightRate
+		if left.LatencyMillis != right.LatencyMillis {
+			return left.LatencyMillis < right.LatencyMillis
 		}
-		if left.AveragePing != right.AveragePing {
-			return left.AveragePing < right.AveragePing
-		}
-		return filtered[i].BaseURL < filtered[j].BaseURL
+		return left.BaseURL < right.BaseURL
 	})
-	return filtered
+	return ranked
 }
 
-func successRate(score CandidateScore) float64 {
-	if score.SampleCount == 0 {
+func statusRank(status CandidateStatus) int {
+	switch status {
+	case StatusUp:
 		return 0
+	case StatusDegraded:
+		return 1
+	case StatusProtected:
+		return 2
+	default:
+		return 3
 	}
-	return float64(score.SuccessCount) / float64(score.SampleCount)
 }

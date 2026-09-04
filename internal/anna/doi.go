@@ -1,86 +1,102 @@
 package anna
 
 import (
+	"context"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
-	colly "github.com/gocolly/colly/v2"
+	"github.com/PuerkitoBio/goquery"
 	"github.com/iosifache/annas-mcp/internal/env"
 	"github.com/iosifache/annas-mcp/internal/logger"
 	"go.uber.org/zap"
 )
 
-func LookupDOI(doi string, timeout time.Duration) (*Paper, error) {
+func LookupDOI(ctx context.Context, doi string, timeout time.Duration) (*Paper, error) {
+	return lookupDOI(ctx, defaultPageLoader, doi, timeout)
+}
+
+func lookupDOI(ctx context.Context, loader pageLoader, doi string, timeout time.Duration) (*Paper, error) {
+	annasBaseURL, err := env.GetAnnasBaseURL(ctx, timeout)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load Anna configuration: %w", err)
+	}
+	return lookupDOIAtBaseURL(ctx, loader, annasBaseURL, doi, timeout)
+}
+
+func lookupDOIAtBaseURL(ctx context.Context, loader pageLoader, annasBaseURL, doi string, timeout time.Duration) (*Paper, error) {
 	l := logger.GetLogger()
-	annasBaseURL := env.GetAnnasBaseURL()
 	paper := &Paper{DOI: doi}
 
-	searchCollector := colly.NewCollector(colly.UserAgent(BrowserUserAgent))
-	searchCollector.SetRequestTimeout(timeout)
-	searchCollector.OnHTML("a[href^='/md5/']", func(e *colly.HTMLElement) {
-		if paper.Hash != "" {
-			return
-		}
-		hash := strings.TrimPrefix(e.Attr("href"), "/md5/")
-		if hash != "" {
-			paper.Hash = hash
-		}
-	})
-	searchCollector.OnError(func(r *colly.Response, err error) {
-		status := 0
-		if r != nil {
-			status = r.StatusCode
-		}
-		l.Error("SciDB search failed",
-			zap.String("doi", doi),
-			zap.Int("statusCode", status),
-			zap.Error(err),
-		)
-	})
-
-	scidbURL := fmt.Sprintf(AnnasSciDBEndpointFormat, annasBaseURL, doi)
+	// Keep the raw identifier separate from its path and query representations.
+	scidbURL := (&url.URL{Scheme: "https", Host: annasBaseURL, Path: "/scidb/" + doi}).String()
 	paper.PageURL = scidbURL
 	l.Info("Looking up DOI", zap.String("url", scidbURL))
-	if err := searchCollector.Visit(scidbURL); err != nil {
+	searchHTML, err := loader.Load(ctx, scidbURL, timeout)
+	if err != nil {
 		return nil, fmt.Errorf("failed to lookup DOI: %w", err)
 	}
+	searchDocument, err := goquery.NewDocumentFromReader(strings.NewReader(searchHTML))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse DOI lookup: %w", err)
+	}
+	searchDocument.Find("a[href^='/md5/']").EachWithBreak(func(_ int, element *goquery.Selection) bool {
+		link, ok := element.Attr("href")
+		if !ok {
+			return true
+		}
+		hash := strings.TrimPrefix(link, "/md5/")
+		if hash == "" {
+			return true
+		}
+		paper.Hash = hash
+		return false
+	})
 	if paper.Hash == "" {
 		return nil, fmt.Errorf("no paper found for DOI: %s", doi)
 	}
 
-	detailCollector := colly.NewCollector(colly.UserAgent(BrowserUserAgent))
-	detailCollector.SetRequestTimeout(timeout)
-	detailCollector.OnHTML("title", func(e *colly.HTMLElement) {
-		if title := paperTitleFromPageTitle(e.Text); title != "" {
-			paper.Title = title
-		}
-	})
-	detailCollector.OnHTML("meta[name=description]", func(e *colly.HTMLElement) {
-		paper.Journal = journalFromDescription(e.Attr("content"))
-	})
-	detailCollector.OnHTML("a[href^='/search']", func(e *colly.HTMLElement) {
-		if paper.Authors == "" && e.DOM.Find("span.icon-\\[mdi--user-edit\\]").Length() > 0 {
-			paper.Authors = strings.TrimSpace(e.Text)
-		}
-	})
-	detailCollector.OnHTML("div.text-gray-500", func(e *colly.HTMLElement) {
-		if strings.Contains(e.Text, "MB") || strings.Contains(e.Text, "KB") {
-			paper.Size = strings.TrimSpace(e.Text)
-		}
-	})
-	detailCollector.OnError(func(r *colly.Response, err error) {
-		l.Warn("Failed to fetch paper details", zap.String("hash", paper.Hash), zap.Error(err))
-	})
-
 	md5URL := fmt.Sprintf("https://%s/md5/%s", annasBaseURL, paper.Hash)
 	l.Info("Fetching paper details", zap.String("url", md5URL))
-	if err := detailCollector.Visit(md5URL); err != nil {
-		l.Warn("Failed to visit paper detail page", zap.Error(err))
+	detailHTML, detailErr := loader.Load(ctx, md5URL, timeout)
+	if detailErr != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		l.Warn("Failed to fetch paper details", zap.String("hash", paper.Hash), zap.Error(detailErr))
+	} else if detailDocument, parseErr := goquery.NewDocumentFromReader(strings.NewReader(detailHTML)); parseErr != nil {
+		l.Warn("Failed to parse paper details", zap.String("hash", paper.Hash), zap.Error(parseErr))
+	} else {
+		populatePaperDetails(paper, detailDocument)
 	}
 
-	paper.DownloadURL = fmt.Sprintf("/scidb?doi=%s", doi)
+	paper.DownloadURL = (&url.URL{Path: "/scidb", RawQuery: url.Values{"doi": {doi}}.Encode()}).String()
 	return paper, nil
+}
+
+func populatePaperDetails(paper *Paper, document *goquery.Document) {
+	if title := paperTitleFromPageTitle(document.Find("title").First().Text()); title != "" {
+		paper.Title = title
+	}
+	if description, ok := document.Find("meta[name=description]").First().Attr("content"); ok {
+		paper.Journal = journalFromDescription(description)
+	}
+	document.Find("a[href^='/search']").EachWithBreak(func(_ int, element *goquery.Selection) bool {
+		if element.Find("span.icon-\\[mdi--user-edit\\]").Length() == 0 {
+			return true
+		}
+		paper.Authors = strings.TrimSpace(element.Text())
+		return false
+	})
+	document.Find("div.text-gray-500").EachWithBreak(func(_ int, element *goquery.Selection) bool {
+		text := strings.TrimSpace(element.Text())
+		if !strings.Contains(text, "MB") && !strings.Contains(text, "KB") {
+			return true
+		}
+		paper.Size = text
+		return false
+	})
 }
 
 func paperTitleFromPageTitle(title string) string {

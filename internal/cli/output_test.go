@@ -2,10 +2,13 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/iosifache/annas-mcp/internal/anna"
 )
@@ -136,5 +139,44 @@ func TestCommandSurfaceContainsOnlyCLIOperations(t *testing.T) {
 	want := []string{"article-download", "article-search", "book-download", "book-search"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected commands: got %v, want %v", got, want)
+	}
+}
+
+func TestBookSearchFailureReturnsErrorWithoutJSON(t *testing.T) {
+	command := newCommand(operations{
+		findBooks: func(context.Context, string, time.Duration) ([]*anna.Book, error) {
+			return nil, errors.New("browser verification timed out")
+		},
+	})
+	var stdout bytes.Buffer
+	command.SetOut(&stdout)
+	command.SetErr(&bytes.Buffer{})
+	command.SetArgs([]string{"book-search", "mothman"})
+
+	err := command.ExecuteContext(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "browser verification timed out") {
+		t.Fatalf("ExecuteContext returned %v", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("failed search wrote JSON: %q", stdout.String())
+	}
+}
+
+func TestBookSearchPassesCommandContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	command := newCommand(operations{
+		findBooks: func(received context.Context, _ string, _ time.Duration) ([]*anna.Book, error) {
+			if !errors.Is(received.Err(), context.Canceled) {
+				t.Fatalf("operation context error = %v, want canceled", received.Err())
+			}
+			return nil, received.Err()
+		},
+	})
+	command.SetOut(&bytes.Buffer{})
+	command.SetErr(&bytes.Buffer{})
+	command.SetArgs([]string{"book-search", "mothman"})
+	if err := command.ExecuteContext(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ExecuteContext returned %v, want context canceled", err)
 	}
 }

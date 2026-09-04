@@ -73,29 +73,26 @@ case "$ACTION" in
         ;;
         
     "recreate")
-        echo "Recreating tag: $VERSION"
-        
-        echo "Step 1: Deleting existing tag..."
-        git tag -d "$VERSION" 2>/dev/null
-        git push origin --delete "$VERSION" 2>/dev/null
-        
-        echo "Step 2: Creating new tag..."
-        git tag "$VERSION"
-        
-        if [ $? -eq 0 ]; then
-            echo "Tag $VERSION created successfully"
-            
-            git push origin "$VERSION"
-            
-            if [ $? -eq 0 ]; then
-                echo "Tag $VERSION recreated and pushed to GitHub successfully"
-            else
-                echo "Error: Failed to push tag $VERSION to GitHub"
-                exit 1
-            fi
-        else
-            echo "Error: Failed to create tag $VERSION"
+        # Prepare the replacement without changing either published or local tags.
+        tag_ref="refs/tags/$VERSION"
+        git check-ref-format "$tag_ref" || exit 1
+        new_oid=$(git rev-parse --verify 'HEAD^{commit}') || exit 1
+        local_oid=$(git rev-parse --verify "$tag_ref" 2>/dev/null) || local_oid=""
+        remote_record=$(git ls-remote --refs origin "$tag_ref") || exit 1
+        remote_oid=${remote_record%%[[:space:]]*}
+        echo "Replacing $tag_ref: remote ${remote_oid:-absent}, local ${local_oid:-absent}, new $new_oid"
+
+        # The explicit lease also protects an absent tag from concurrent creation.
+        # A rejected push leaves both old refs intact; there is no deletion gap.
+        if ! git push --force-with-lease="$tag_ref:$remote_oid" origin "$new_oid:$tag_ref"; then
+            echo "Error: Replacement push failed; local tag preserved. Verify remote state before retrying." >&2
             exit 1
         fi
+        # Compare-and-swap preserves a concurrent local edit after publication.
+        if ! git update-ref "$tag_ref" "$new_oid" "$local_oid"; then
+            echo "Error: Remote now points to $new_oid, but local tag changed concurrently; local state preserved." >&2
+            exit 1
+        fi
+        echo "Tag $VERSION recreated successfully"
         ;;
 esac

@@ -1,18 +1,25 @@
 package anna
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 
-	colly "github.com/gocolly/colly/v2"
+	"github.com/PuerkitoBio/goquery"
 	"github.com/iosifache/annas-mcp/internal/env"
 	"github.com/iosifache/annas-mcp/internal/logger"
+	"github.com/iosifache/annas-mcp/internal/webpage"
 	"go.uber.org/zap"
 )
+
+type pageLoader interface {
+	Load(context.Context, string, time.Duration) (string, error)
+}
+
+var defaultPageLoader pageLoader = webpage.NewLoader(nil)
 
 func extractMetaInformation(meta string) (language, format, size string) {
 	parts := strings.Split(meta, " · ")
@@ -49,93 +56,91 @@ func extractMetaInformation(meta string) (language, format, size string) {
 	return language, format, size
 }
 
-func FindBook(query string, timeout time.Duration) ([]*Book, error) {
+func FindBook(ctx context.Context, query string, timeout time.Duration) ([]*Book, error) {
+	return findBooks(ctx, defaultPageLoader, query, timeout)
+}
+
+func findBooks(ctx context.Context, loader pageLoader, query string, timeout time.Duration) ([]*Book, error) {
+	annasBaseURL, err := env.GetAnnasBaseURL(ctx, timeout)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load Anna configuration: %w", err)
+	}
+	return findBooksAtBaseURL(ctx, loader, annasBaseURL, query, timeout)
+}
+
+func findBooksAtBaseURL(ctx context.Context, loader pageLoader, annasBaseURL, query string, timeout time.Duration) ([]*Book, error) {
 	l := logger.GetLogger()
-
-	var bookListMutex sync.Mutex
-	bookList := make([]*colly.HTMLElement, 0)
-
-	c := colly.NewCollector(
-		colly.Async(true),
-		colly.UserAgent(BrowserUserAgent),
-	)
-	c.SetRequestTimeout(timeout)
-
-	c.OnHTML("a[href^='/md5/']", func(e *colly.HTMLElement) {
-		if e.Attr("class") == "custom-a block mr-2 sm:mr-4 hover:opacity-80" {
-			bookListMutex.Lock()
-			bookList = append(bookList, e)
-			bookListMutex.Unlock()
-		}
-	})
-
-	c.OnRequest(func(r *colly.Request) {
-		l.Info("Visiting URL", zap.String("url", r.URL.String()))
-	})
-
-	c.OnError(func(r *colly.Response, err error) {
-		status := 0
-		if r != nil {
-			status = r.StatusCode
-		}
-		l.Error("Search request failed",
-			zap.Int("statusCode", status),
-			zap.Error(err),
-		)
-	})
-
-	annasBaseURL := env.GetAnnasBaseURL()
 	fullURL := fmt.Sprintf(AnnasSearchEndpointFormat, annasBaseURL, url.QueryEscape(query), "book_any")
 
-	if err := c.Visit(fullURL); err != nil {
-		l.Error("Failed to visit search URL", zap.String("url", fullURL), zap.Error(err))
-		return nil, fmt.Errorf("failed to visit search URL: %w", err)
+	html, err := loader.Load(ctx, fullURL, timeout)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load book search page: %w", err)
 	}
-	c.Wait()
-
-	bookListParsed := make([]*Book, 0)
-	for _, element := range bookList {
-		if book, ok := parseBookElement(element, l); ok {
-			bookListParsed = append(bookListParsed, book)
-		}
+	books, totalElements, err := parseBookSearchHTML(html, annasBaseURL, l)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse book search page: %w", err)
 	}
 
 	l.Info("Search completed",
-		zap.Int("totalElements", len(bookList)),
-		zap.Int("validBooks", len(bookListParsed)),
+		zap.Int("totalElements", totalElements),
+		zap.Int("validBooks", len(books)),
 	)
-
-	return bookListParsed, nil
+	return books, nil
 }
 
-func parseBookElement(element *colly.HTMLElement, l *zap.Logger) (*Book, bool) {
-	parent := element.DOM.Parent()
+func parseBookSearchHTML(html, annasBaseURL string, l *zap.Logger) ([]*Book, int, error) {
+	document, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		return nil, 0, err
+	}
+	baseURL, err := url.Parse("https://" + annasBaseURL + "/")
+	if err != nil {
+		return nil, 0, err
+	}
+
+	books := make([]*Book, 0)
+	seen := make(map[string]struct{})
+	totalElements := 0
+	document.Find("a[href^='/md5/']").Each(func(_ int, element *goquery.Selection) {
+		book, ok := parseBookElement(element, baseURL, l)
+		if !ok {
+			return
+		}
+		totalElements++
+		if _, exists := seen[book.Hash]; exists {
+			return
+		}
+		seen[book.Hash] = struct{}{}
+		books = append(books, book)
+	})
+	return books, totalElements, nil
+}
+
+func parseBookElement(element *goquery.Selection, baseURL *url.URL, l *zap.Logger) (*Book, bool) {
+	parent := element.Parent()
 	if parent.Length() == 0 {
 		l.Warn("Skipping book: no parent element found")
 		return nil, false
 	}
 
-	bookInfoDiv := parent.Find("div.max-w-full")
+	bookInfoDiv := parent.Find("div.max-w-full").First()
 	if bookInfoDiv.Length() == 0 {
-		l.Warn("Skipping book: book info container not found")
 		return nil, false
 	}
 
-	title := strings.TrimSpace(bookInfoDiv.Find("a[href^='/md5/']").Text())
+	title := strings.TrimSpace(bookInfoDiv.Find("a[href^='/md5/']").First().Text())
 	if title == "" {
 		l.Warn("Skipping book: title is empty")
 		return nil, false
 	}
 
-	authorsRaw := bookInfoDiv.Find("a[href^='/search'] span.icon-\\[mdi--user-edit\\]").Parent().Text()
-	authors := strings.TrimSpace(authorsRaw)
-	publisherRaw := bookInfoDiv.Find("a[href^='/search'] span.icon-\\[mdi--company\\]").Parent().Text()
-	publisher := strings.TrimSpace(publisherRaw)
-	meta := bookInfoDiv.Find("div.text-gray-800").Text()
+	authors := strings.TrimSpace(bookInfoDiv.Find("a[href^='/search'] span.icon-\\[mdi--user-edit\\]").Parent().First().Text())
+	publisher := strings.TrimSpace(bookInfoDiv.Find("a[href^='/search'] span.icon-\\[mdi--company\\]").Parent().First().Text())
+	meta := bookInfoDiv.Find("div.text-gray-800").First().Text()
 	language, format, size := extractMetaInformation(meta)
 
-	link := element.Attr("href")
-	if link == "" {
+	link, ok := element.Attr("href")
+	if !ok || link == "" {
 		l.Warn("Skipping book: no link found", zap.String("title", title))
 		return nil, false
 	}
@@ -144,6 +149,7 @@ func parseBookElement(element *colly.HTMLElement, l *zap.Logger) (*Book, bool) {
 		l.Warn("Skipping book: no hash found", zap.String("title", title))
 		return nil, false
 	}
+	absoluteURL := baseURL.ResolveReference(&url.URL{Path: link}).String()
 
 	return &Book{
 		Language:  language,
@@ -152,98 +158,96 @@ func parseBookElement(element *colly.HTMLElement, l *zap.Logger) (*Book, bool) {
 		Title:     title,
 		Publisher: publisher,
 		Authors:   authors,
-		URL:       element.Request.AbsoluteURL(link),
+		URL:       absoluteURL,
 		Hash:      hash,
 	}, true
 }
 
-func FindArticle(query string, timeout time.Duration) ([]*Paper, error) {
+func FindArticle(ctx context.Context, query string, timeout time.Duration) ([]*Paper, error) {
+	return findArticles(ctx, defaultPageLoader, query, timeout)
+}
+
+func findArticles(ctx context.Context, loader pageLoader, query string, timeout time.Duration) ([]*Paper, error) {
+	annasBaseURL, err := env.GetAnnasBaseURL(ctx, timeout)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load Anna configuration: %w", err)
+	}
+	return findArticlesAtBaseURL(ctx, loader, annasBaseURL, query, timeout)
+}
+
+func findArticlesAtBaseURL(ctx context.Context, loader pageLoader, annasBaseURL, query string, timeout time.Duration) ([]*Paper, error) {
 	l := logger.GetLogger()
-
-	var paperListMutex sync.Mutex
-	paperList := make([]*colly.HTMLElement, 0)
-
-	c := colly.NewCollector(
-		colly.Async(true),
-		colly.UserAgent(BrowserUserAgent),
-	)
-	c.SetRequestTimeout(timeout)
-
-	c.OnHTML("a[href^='/md5/']", func(e *colly.HTMLElement) {
-		if e.Attr("class") == "custom-a block mr-2 sm:mr-4 hover:opacity-80" {
-			paperListMutex.Lock()
-			paperList = append(paperList, e)
-			paperListMutex.Unlock()
-		}
-	})
-
-	c.OnRequest(func(r *colly.Request) {
-		l.Info("Visiting URL", zap.String("url", r.URL.String()))
-	})
-
-	c.OnError(func(r *colly.Response, err error) {
-		status := 0
-		if r != nil {
-			status = r.StatusCode
-		}
-		l.Error("Article search request failed",
-			zap.Int("statusCode", status),
-			zap.Error(err),
-		)
-	})
-
-	annasBaseURL := env.GetAnnasBaseURL()
 	fullURL := fmt.Sprintf(AnnasSearchEndpointFormat, annasBaseURL, url.QueryEscape(query), "journal")
 
-	if err := c.Visit(fullURL); err != nil {
-		l.Error("Failed to visit article search URL", zap.String("url", fullURL), zap.Error(err))
-		return nil, fmt.Errorf("failed to visit article search URL: %w", err)
+	html, err := loader.Load(ctx, fullURL, timeout)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load article search page: %w", err)
 	}
-	c.Wait()
-
-	paperListParsed := make([]*Paper, 0)
-	for _, element := range paperList {
-		if paper, ok := parsePaperElement(element, l); ok {
-			paperListParsed = append(paperListParsed, paper)
-		}
+	papers, totalElements, err := parseArticleSearchHTML(html, annasBaseURL, l)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse article search page: %w", err)
 	}
 
 	l.Info("Article search completed",
-		zap.Int("totalElements", len(paperList)),
-		zap.Int("validPapers", len(paperListParsed)),
+		zap.Int("totalElements", totalElements),
+		zap.Int("validPapers", len(papers)),
 	)
-
-	return paperListParsed, nil
+	return papers, nil
 }
 
-func parsePaperElement(element *colly.HTMLElement, l *zap.Logger) (*Paper, bool) {
-	parent := element.DOM.Parent()
+func parseArticleSearchHTML(html, annasBaseURL string, l *zap.Logger) ([]*Paper, int, error) {
+	document, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		return nil, 0, err
+	}
+	baseURL, err := url.Parse("https://" + annasBaseURL + "/")
+	if err != nil {
+		return nil, 0, err
+	}
+
+	papers := make([]*Paper, 0)
+	seen := make(map[string]struct{})
+	totalElements := 0
+	document.Find("a[href^='/md5/']").Each(func(_ int, element *goquery.Selection) {
+		paper, ok := parsePaperElement(element, baseURL, l)
+		if !ok {
+			return
+		}
+		totalElements++
+		if _, exists := seen[paper.Hash]; exists {
+			return
+		}
+		seen[paper.Hash] = struct{}{}
+		papers = append(papers, paper)
+	})
+	return papers, totalElements, nil
+}
+
+func parsePaperElement(element *goquery.Selection, baseURL *url.URL, l *zap.Logger) (*Paper, bool) {
+	parent := element.Parent()
 	if parent.Length() == 0 {
 		l.Warn("Skipping article: no parent element found")
 		return nil, false
 	}
 
-	paperInfoDiv := parent.Find("div.max-w-full")
+	paperInfoDiv := parent.Find("div.max-w-full").First()
 	if paperInfoDiv.Length() == 0 {
-		l.Warn("Skipping article: info container not found")
 		return nil, false
 	}
 
-	title := strings.TrimSpace(paperInfoDiv.Find("a[href^='/md5/']").Text())
+	title := strings.TrimSpace(paperInfoDiv.Find("a[href^='/md5/']").First().Text())
 	if title == "" {
 		l.Warn("Skipping article: title is empty")
 		return nil, false
 	}
 
-	authorsRaw := paperInfoDiv.Find("a[href^='/search'] span.icon-\\[mdi--user-edit\\]").Parent().Text()
-	authors := strings.TrimSpace(authorsRaw)
-	journalRaw := paperInfoDiv.Find("a[href^='/search'] span.icon-\\[mdi--company\\]").Parent().Text()
-	journal := strings.TrimSpace(journalRaw)
-	meta := paperInfoDiv.Find("div.text-gray-800").Text()
+	authors := strings.TrimSpace(paperInfoDiv.Find("a[href^='/search'] span.icon-\\[mdi--user-edit\\]").Parent().First().Text())
+	journal := strings.TrimSpace(paperInfoDiv.Find("a[href^='/search'] span.icon-\\[mdi--company\\]").Parent().First().Text())
+	meta := paperInfoDiv.Find("div.text-gray-800").First().Text()
 	_, _, size := extractMetaInformation(meta)
 
-	link := element.Attr("href")
-	if link == "" {
+	link, ok := element.Attr("href")
+	if !ok || link == "" {
 		l.Warn("Skipping article: no link found", zap.String("title", title))
 		return nil, false
 	}
@@ -252,6 +256,7 @@ func parsePaperElement(element *colly.HTMLElement, l *zap.Logger) (*Paper, bool)
 		l.Warn("Skipping article: no hash found", zap.String("title", title))
 		return nil, false
 	}
+	absoluteURL := baseURL.ResolveReference(&url.URL{Path: link}).String()
 
 	return &Paper{
 		Title:   title,
@@ -259,6 +264,6 @@ func parsePaperElement(element *colly.HTMLElement, l *zap.Logger) (*Paper, bool)
 		Journal: journal,
 		Size:    size,
 		Hash:    hash,
-		PageURL: element.Request.AbsoluteURL(link),
+		PageURL: absoluteURL,
 	}, true
 }

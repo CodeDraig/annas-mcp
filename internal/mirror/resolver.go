@@ -2,7 +2,6 @@ package mirror
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,30 +14,16 @@ import (
 )
 
 const (
-	DefaultStatusPageURL = "https://open-slum.org/"
+	DefaultStatusPageURL = "https://open-slum.org/annas.html"
 	defaultProbeTimeout  = 10 * time.Second
 	browserUserAgent     = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 
-type Heartbeat struct {
-	Status    int       `json:"status"`
-	Ping      int64     `json:"ping"`
-	Time      time.Time `json:"-"`
-	Timestamp string    `json:"time"`
-}
-
 type Candidate struct {
-	MonitorID  int
-	BaseURL    string
-	SourceURL  string
-	Heartbeats []Heartbeat
-}
-
-type CandidateScore struct {
-	SuccessCount int
-	SampleCount  int
-	LastStatus   int
-	AveragePing  int64
+	BaseURL       string
+	SourceURL     string
+	Status        CandidateStatus
+	LatencyMillis int64
 }
 
 type ResolveOptions struct {
@@ -51,10 +36,6 @@ type Resolver struct {
 	client        *http.Client
 	statusPageURL string
 	probe         ProbeFunc
-}
-
-type heartbeatEnvelope struct {
-	HeartbeatList map[string][]Heartbeat `json:"heartbeatList"`
 }
 
 func NewResolver(client *http.Client, statusPageURL string, probe ProbeFunc) *Resolver {
@@ -86,11 +67,17 @@ func NormalizeBaseURL(raw string) string {
 }
 
 func (r *Resolver) Resolve(ctx context.Context, opts ResolveOptions) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	l := logger.GetLogger()
 	fallbackBaseURL := NormalizeBaseURL(opts.FallbackBaseURL)
 
 	html, err := r.fetch(ctx, r.statusPageURL)
 	if err != nil {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
 		l.Warn("Failed to fetch mirror status page, using fallback mirror if available",
 			zap.String("statusPageURL", r.statusPageURL),
 			zap.String("fallbackBaseURL", fallbackBaseURL),
@@ -118,48 +105,24 @@ func (r *Resolver) Resolve(ctx context.Context, opts ResolveOptions) (string, er
 		return "", err
 	}
 
-	slug := extractStatusPageSlug(html)
-	heartbeatURL, err := buildHeartbeatURL(r.statusPageURL, slug)
-	if err != nil {
-		if fallbackBaseURL != "" {
-			return fallbackBaseURL, nil
-		}
-		return "", err
-	}
-
-	heartbeatJSON, err := r.fetch(ctx, heartbeatURL)
-	if err != nil {
-		l.Warn("Failed to fetch mirror heartbeat data, using fallback mirror if available",
-			zap.String("heartbeatURL", heartbeatURL),
-			zap.String("fallbackBaseURL", fallbackBaseURL),
-			zap.Error(err),
-		)
-		if fallbackBaseURL != "" {
-			return fallbackBaseURL, nil
-		}
-		return "", err
-	}
-
-	envelope := heartbeatEnvelope{}
-	if err := json.Unmarshal([]byte(heartbeatJSON), &envelope); err != nil {
-		l.Warn("Failed to decode mirror heartbeat data, using fallback mirror if available",
-			zap.String("fallbackBaseURL", fallbackBaseURL),
-			zap.Error(err),
-		)
-		if fallbackBaseURL != "" {
-			return fallbackBaseURL, nil
-		}
-		return "", err
-	}
-
-	ranked := rankCandidates(applyHeartbeats(candidates, envelope.HeartbeatList))
+	ranked := rankCandidates(candidates)
 	l.Info("Resolved Anna mirror candidates",
 		zap.Int("discoveredCandidates", len(candidates)),
-		zap.Int("healthyCandidates", len(ranked)),
+		zap.Int("usableCandidates", len(ranked)),
 	)
+
 	for _, candidate := range ranked {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		if candidate.Status == StatusProtected {
+			continue
+		}
 		if r.probe != nil {
 			if err := r.probe(ctx, candidate.BaseURL); err != nil {
+				if ctx.Err() != nil {
+					return "", ctx.Err()
+				}
 				l.Warn("Anna mirror probe failed",
 					zap.String("baseURL", candidate.BaseURL),
 					zap.Error(err),
@@ -170,13 +133,36 @@ func (r *Resolver) Resolve(ctx context.Context, opts ResolveOptions) (string, er
 
 		l.Info("Selected Anna mirror automatically",
 			zap.String("baseURL", candidate.BaseURL),
-			zap.Int("monitorID", candidate.MonitorID),
+			zap.String("status", string(candidate.Status)),
 		)
 		return candidate.BaseURL, nil
 	}
 
+	for _, candidate := range ranked {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		if candidate.Status == StatusProtected && candidate.BaseURL == fallbackBaseURL {
+			l.Info("Selected configured protected mirror for browser-assisted search",
+				zap.String("baseURL", candidate.BaseURL),
+			)
+			return candidate.BaseURL, nil
+		}
+	}
+	for _, candidate := range ranked {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		if candidate.Status == StatusProtected {
+			l.Info("Selected protected mirror for browser-assisted search",
+				zap.String("baseURL", candidate.BaseURL),
+			)
+			return candidate.BaseURL, nil
+		}
+	}
+
 	if fallbackBaseURL != "" {
-		l.Warn("No reachable Anna mirror found, using fallback mirror",
+		l.Warn("No reachable Anna mirror found, using configured mirror",
 			zap.String("fallbackBaseURL", fallbackBaseURL),
 		)
 		return fallbackBaseURL, nil

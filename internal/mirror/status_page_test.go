@@ -5,84 +5,92 @@ import (
 	"testing"
 )
 
-func TestParseStatusPageExtractsAnnaCandidatesWithoutHardcodedIDs(t *testing.T) {
+func TestParseStatusPageExtractsFlatMonitorCandidates(t *testing.T) {
 	t.Parallel()
 
-	html := `
-<html><body>
-<script>
-window.preloadData = {'config':{'slug':'slum'},'incident':null,'publicGroupList':[
-  {'id':1,'name':'Anna\'s Archive','monitorList':[
-    {'id':900,'name':'Anna A','sendUrl':1,'type':'keyword','url':'https://annas-archive.zz/'},
-    {'id':901,'name':'Anna B','sendUrl':1,'type':'keyword','url':'https://annas-archive.yy/'}
-  ]},
-  {'id':2,'name':'Others','monitorList':[
-    {'id':999,'name':'Not Anna','sendUrl':1,'type':'keyword','url':'https://example.org/'}
-  ]}
-],'maintenanceList':[]};
-</script>
-</body></html>`
-
+	html := flatMonitorPage(
+		flatMonitorCard("https://annas-archive.gl", "UP", "900", "120"),
+		flatMonitorCard("https://annas-archive.pk", "PROTECTED", "", "530"),
+		flatMonitorCard("https://annas-archive.gd", "DEGRADED", "800", "640"),
+	)
 	candidates, err := ParseStatusPageHTML(html)
 	if err != nil {
 		t.Fatalf("ParseStatusPageHTML returned error: %v", err)
 	}
-	if len(candidates) != 2 {
-		t.Fatalf("expected 2 Anna candidates, got %d", len(candidates))
+	if len(candidates) != 3 {
+		t.Fatalf("expected 3 candidates, got %d", len(candidates))
 	}
-	if candidates[0].MonitorID != 900 || candidates[0].BaseURL != "annas-archive.zz" {
+	if candidates[0].BaseURL != "annas-archive.gl" || candidates[0].Status != StatusUp || candidates[0].LatencyMillis != 120 {
 		t.Fatalf("unexpected first candidate: %+v", candidates[0])
 	}
-	if candidates[1].MonitorID != 901 || candidates[1].BaseURL != "annas-archive.yy" {
+	if candidates[1].BaseURL != "annas-archive.pk" || candidates[1].Status != StatusProtected || candidates[1].LatencyMillis != 530 {
 		t.Fatalf("unexpected second candidate: %+v", candidates[1])
 	}
-}
-
-func TestParseStatusPageUsesCurrentURLFallback(t *testing.T) {
-	t.Parallel()
-
-	candidates, err := ParseStatusPageHTML(`<a href="https://annas-archive.fallback/">mirror</a>`)
-	if err != nil {
-		t.Fatalf("ParseStatusPageHTML returned error: %v", err)
-	}
-	if len(candidates) != 1 || candidates[0].BaseURL != "annas-archive.fallback" || candidates[0].MonitorID != 0 {
-		t.Fatalf("unexpected fallback candidates: %+v", candidates)
+	if candidates[2].Status != StatusDegraded || candidates[2].LatencyMillis != 640 {
+		t.Fatalf("unexpected third candidate: %+v", candidates[2])
 	}
 }
 
-func TestParseStatusPageRejectsUnsafeAnnaCandidateURLs(t *testing.T) {
+func TestParseStatusPageRejectsMalformedAndUnsafeCandidates(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]string{
-		"userinfo":       "https://annas-archive.fake@attacker.example/",
-		"alternate host": "https://attacker.example/",
-		"port":           "https://annas-archive.fake:8443/",
-		"path":           "https://annas-archive.fake/search",
-		"query":          "https://annas-archive.fake/?redirect=attacker.example",
-		"fragment":       "https://annas-archive.fake/#attacker",
-		"insecure":       "http://annas-archive.fake/",
+		"missing link":   `<div class="card"><span class="status-badge up">UP</span></div>`,
+		"userinfo":       flatMonitorCard("https://annas-archive.fake@attacker.example/", "UP", "", "100"),
+		"alternate host": flatMonitorCard("https://attacker.example/", "UP", "", "100"),
+		"software host":  flatMonitorCard("https://software.annas-archive.gl/", "UP", "", "100"),
+		"port":           flatMonitorCard("https://annas-archive.fake:8443/", "UP", "", "100"),
+		"path":           flatMonitorCard("https://annas-archive.fake/search", "UP", "", "100"),
+		"query":          flatMonitorCard("https://annas-archive.fake/?redirect=attacker.example", "UP", "", "100"),
+		"fragment":       flatMonitorCard("https://annas-archive.fake/#attacker", "UP", "", "100"),
+		"insecure":       flatMonitorCard("http://annas-archive.fake/", "UP", "", "100"),
 	}
 
-	for name, candidateURL := range tests {
-		name, candidateURL := name, candidateURL
+	for name, card := range tests {
+		name, card := name, card
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			html := strings.ReplaceAll(`
-<script>
-window.preloadData = {'config':{'slug':'slum'},'publicGroupList':[
-  {'id':1,'name':'Anna\'s Archive','monitorList':[
-    {'id':900,'name':'Unsafe','url':'CANDIDATE_URL'}
-  ]}
-]};
-</script>`, "CANDIDATE_URL", candidateURL)
-
-			candidates, err := ParseStatusPageHTML(html)
+			candidates, err := ParseStatusPageHTML(flatMonitorPage(card))
 			if err != nil {
 				t.Fatalf("ParseStatusPageHTML returned error: %v", err)
 			}
 			if len(candidates) != 0 {
-				t.Fatalf("expected unsafe candidate to be rejected, got %+v", candidates)
+				t.Fatalf("expected candidate to be rejected, got %+v", candidates)
 			}
 		})
 	}
+}
+
+func TestParseStatusPageDeduplicatesAndMarksUnknownStatus(t *testing.T) {
+	t.Parallel()
+
+	html := flatMonitorPage(
+		flatMonitorCard("https://annas-archive.gl", "MYSTERY", "", "invalid"),
+		flatMonitorCard("https://annas-archive.gl", "UP", "", "100"),
+	)
+	candidates, err := ParseStatusPageHTML(html)
+	if err != nil {
+		t.Fatalf("ParseStatusPageHTML returned error: %v", err)
+	}
+	if len(candidates) != 1 || candidates[0].Status != StatusUnknown || candidates[0].LatencyMillis != 0 {
+		t.Fatalf("unexpected candidates: %+v", candidates)
+	}
+}
+
+func flatMonitorPage(cards ...string) string {
+	return `<html><body>` + strings.Join(cards, "") + `</body></html>`
+}
+
+func flatMonitorCard(rawURL, status, firstLatency, latestLatency string) string {
+	latencies := ""
+	if firstLatency != "" {
+		latencies += `<span data-status="` + status + `" data-latency="` + firstLatency + `"></span>`
+	}
+	if latestLatency != "" {
+		latencies += `<span data-status="` + status + `" data-latency="` + latestLatency + `"></span>`
+	}
+	return `<div class="card">
+<div class="card-header"><a class="card-title" href="` + rawURL + `">mirror</a><span class="status-badge">` + status + `</span></div>
+<div class="timeline">` + latencies + `</div>
+</div>`
 }

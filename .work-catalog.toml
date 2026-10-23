@@ -1,0 +1,13 @@
+# Project metadata for work-catalog. Edit deliberately; refresh imports changes.
+schema_version = 1
+
+[project]
+id = "annas-mcp-af6003e6"
+purpose = "Anna's Archive search/download CLI with browser verification and mirror-selection support."
+state = "unknown"
+next_action = "Use the documented entry point to select the next task; confirm owner intent before changing lifecycle. Runtime behavior was not tested."
+tags = ["Go", "repository", "xint"]
+
+[annotations]
+tags = []
+note = ""

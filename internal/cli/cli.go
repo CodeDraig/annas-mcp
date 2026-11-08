@@ -35,14 +35,14 @@ func Start() {
 
 func NewCommand() *cobra.Command {
 	return newCommand(operations{
-		findBooks:    anna.FindBook,
-		findArticles: anna.FindArticle,
+		findBooks:    anna.FindBookWithOptions,
+		findArticles: anna.FindArticleWithOptions,
 		lookupDOI:    anna.LookupDOI,
 	})
 }
 
-type bookSearchOperation func(context.Context, string, time.Duration) ([]*anna.Book, error)
-type articleSearchOperation func(context.Context, string, time.Duration) ([]*anna.Paper, error)
+type bookSearchOperation func(context.Context, string, time.Duration, anna.SearchOptions) ([]*anna.Book, error)
+type articleSearchOperation func(context.Context, string, time.Duration, anna.SearchOptions) ([]*anna.Paper, error)
 type doiLookupOperation func(context.Context, string, time.Duration) (*anna.Paper, error)
 
 type operations struct {
@@ -90,15 +90,19 @@ func newCommand(ops operations) *cobra.Command {
 }
 
 func newBookSearchCommand(timeout *time.Duration, human *bool, l *zap.Logger, findBooks bookSearchOperation) *cobra.Command {
-	return &cobra.Command{
+	options := anna.SearchOptions{Page: 1, Pages: 1}
+	command := &cobra.Command{
 		Use:   "book-search [query]",
 		Short: "Search for books by title, author, or topic",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := options.Validate(); err != nil {
+				return err
+			}
 			query := args[0]
 			l.Info("Book search command called", zap.String("query", query))
 
-			books, err := findBooks(cmd.Context(), query, *timeout)
+			books, err := findBooks(cmd.Context(), query, *timeout, options)
 			if err != nil {
 				l.Error("Book search command failed", zap.String("query", query), zap.Error(err))
 				return fmt.Errorf("failed to search books: %w", err)
@@ -108,6 +112,9 @@ func newBookSearchCommand(timeout *time.Duration, human *bool, l *zap.Logger, fi
 			return renderBookSearch(cmd.OutOrStdout(), *human, query, books)
 		},
 	}
+	command.Flags().IntVar(&options.Page, "page", 1, "Starting search page (1-100)")
+	command.Flags().IntVar(&options.Pages, "pages", 1, "Maximum number of search pages to fetch")
+	return command
 }
 
 func newBookDownloadCommand(timeout *time.Duration, human *bool, l *zap.Logger) *cobra.Command {
@@ -154,16 +161,23 @@ func newBookDownloadCommand(timeout *time.Duration, human *bool, l *zap.Logger) 
 }
 
 func newArticleSearchCommand(timeout *time.Duration, human *bool, l *zap.Logger, findArticles articleSearchOperation, lookupDOI doiLookupOperation) *cobra.Command {
-	return &cobra.Command{
+	options := anna.SearchOptions{Page: 1, Pages: 1}
+	command := &cobra.Command{
 		Use:   "article-search [query]",
 		Short: "Search for articles by DOI or keywords",
 		Long:  "Search for academic articles. Provide a DOI (starting with '10.') or keywords.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := options.Validate(); err != nil {
+				return err
+			}
 			query := args[0]
 			l.Info("Article search command called", zap.String("query", query))
 
 			if strings.HasPrefix(strings.TrimSpace(query), "10.") {
+				if options.Page != 1 || options.Pages != 1 {
+					return fmt.Errorf("pagination flags apply to keyword searches, not DOI lookup")
+				}
 				paper, err := lookupDOI(cmd.Context(), query, *timeout)
 				if err != nil {
 					l.Error("DOI lookup failed", zap.String("doi", query), zap.Error(err))
@@ -174,7 +188,7 @@ func newArticleSearchCommand(timeout *time.Duration, human *bool, l *zap.Logger,
 				return renderArticleSearch(cmd.OutOrStdout(), *human, true, query, []*anna.Paper{paper})
 			}
 
-			papers, err := findArticles(cmd.Context(), query, *timeout)
+			papers, err := findArticles(cmd.Context(), query, *timeout, options)
 			if err != nil {
 				l.Error("Article search failed", zap.String("query", query), zap.Error(err))
 				return fmt.Errorf("article search failed: %w", err)
@@ -184,6 +198,9 @@ func newArticleSearchCommand(timeout *time.Duration, human *bool, l *zap.Logger,
 			return renderArticleSearch(cmd.OutOrStdout(), *human, false, query, papers)
 		},
 	}
+	command.Flags().IntVar(&options.Page, "page", 1, "Starting search page (1-100); keyword searches only")
+	command.Flags().IntVar(&options.Pages, "pages", 1, "Maximum number of search pages to fetch; keyword searches only")
+	return command
 }
 
 func newArticleDownloadCommand(timeout *time.Duration, human *bool, l *zap.Logger, lookupDOI doiLookupOperation) *cobra.Command {

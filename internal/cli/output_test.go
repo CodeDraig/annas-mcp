@@ -144,7 +144,7 @@ func TestCommandSurfaceContainsOnlyCLIOperations(t *testing.T) {
 
 func TestBookSearchFailureReturnsErrorWithoutJSON(t *testing.T) {
 	command := newCommand(operations{
-		findBooks: func(context.Context, string, time.Duration) ([]*anna.Book, error) {
+		findBooks: func(context.Context, string, time.Duration, anna.SearchOptions) ([]*anna.Book, error) {
 			return nil, errors.New("browser verification timed out")
 		},
 	})
@@ -166,7 +166,7 @@ func TestBookSearchPassesCommandContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	command := newCommand(operations{
-		findBooks: func(received context.Context, _ string, _ time.Duration) ([]*anna.Book, error) {
+		findBooks: func(received context.Context, _ string, _ time.Duration, _ anna.SearchOptions) ([]*anna.Book, error) {
 			if !errors.Is(received.Err(), context.Canceled) {
 				t.Fatalf("operation context error = %v, want canceled", received.Err())
 			}

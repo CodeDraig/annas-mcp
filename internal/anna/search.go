@@ -60,29 +60,52 @@ func FindBook(ctx context.Context, query string, timeout time.Duration) ([]*Book
 	return findBooks(ctx, defaultPageLoader, query, timeout)
 }
 
+func FindBookWithOptions(ctx context.Context, query string, timeout time.Duration, options SearchOptions) ([]*Book, error) {
+	return findBooksWithOptions(ctx, defaultPageLoader, query, timeout, options)
+}
+
 func findBooks(ctx context.Context, loader pageLoader, query string, timeout time.Duration) ([]*Book, error) {
+	return findBooksWithOptions(ctx, loader, query, timeout, SearchOptions{Page: 1, Pages: 1})
+}
+
+func findBooksWithOptions(ctx context.Context, loader pageLoader, query string, timeout time.Duration, options SearchOptions) ([]*Book, error) {
+	if err := options.Validate(); err != nil {
+		return nil, err
+	}
 	annasBaseURL, err := env.GetAnnasBaseURL(ctx, timeout)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load Anna configuration: %w", err)
 	}
-	return findBooksAtBaseURL(ctx, loader, annasBaseURL, query, timeout)
+	return findBookPagesAtBaseURL(ctx, loader, annasBaseURL, query, timeout, options)
 }
 
 func findBooksAtBaseURL(ctx context.Context, loader pageLoader, annasBaseURL, query string, timeout time.Duration) ([]*Book, error) {
-	l := logger.GetLogger()
-	fullURL := fmt.Sprintf(AnnasSearchEndpointFormat, annasBaseURL, url.QueryEscape(query), "book_any")
+	return findBookPagesAtBaseURL(ctx, loader, annasBaseURL, query, timeout, SearchOptions{Page: 1, Pages: 1})
+}
 
-	html, err := loader.Load(ctx, fullURL, timeout)
+func findBookPagesAtBaseURL(ctx context.Context, loader pageLoader, annasBaseURL, query string, timeout time.Duration, options SearchOptions) ([]*Book, error) {
+	l := logger.GetLogger()
+	fullURL := searchStartURL(annasBaseURL, query, url.Values{"content": {"book_nonfiction", "book_fiction", "book_unknown"}}, options.Page)
+	books := make([]*Book, 0)
+	seen := make(map[string]struct{})
+	err := loadSearchPages(ctx, loader, fullURL, timeout, options, func(html string) (int, error) {
+		pageBooks, _, err := parseBookSearchHTML(html, annasBaseURL, l)
+		if err != nil {
+			return 0, err
+		}
+		for _, book := range pageBooks {
+			if _, exists := seen[book.Hash]; !exists {
+				seen[book.Hash] = struct{}{}
+				books = append(books, book)
+			}
+		}
+		return len(pageBooks), nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to load book search page: %w", err)
-	}
-	books, totalElements, err := parseBookSearchHTML(html, annasBaseURL, l)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse book search page: %w", err)
+		return nil, fmt.Errorf("failed to search books: %w", err)
 	}
 
 	l.Info("Search completed",
-		zap.Int("totalElements", totalElements),
 		zap.Int("validBooks", len(books)),
 	)
 	return books, nil
@@ -167,29 +190,52 @@ func FindArticle(ctx context.Context, query string, timeout time.Duration) ([]*P
 	return findArticles(ctx, defaultPageLoader, query, timeout)
 }
 
+func FindArticleWithOptions(ctx context.Context, query string, timeout time.Duration, options SearchOptions) ([]*Paper, error) {
+	return findArticlesWithOptions(ctx, defaultPageLoader, query, timeout, options)
+}
+
 func findArticles(ctx context.Context, loader pageLoader, query string, timeout time.Duration) ([]*Paper, error) {
+	return findArticlesWithOptions(ctx, loader, query, timeout, SearchOptions{Page: 1, Pages: 1})
+}
+
+func findArticlesWithOptions(ctx context.Context, loader pageLoader, query string, timeout time.Duration, options SearchOptions) ([]*Paper, error) {
+	if err := options.Validate(); err != nil {
+		return nil, err
+	}
 	annasBaseURL, err := env.GetAnnasBaseURL(ctx, timeout)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load Anna configuration: %w", err)
 	}
-	return findArticlesAtBaseURL(ctx, loader, annasBaseURL, query, timeout)
+	return findArticlePagesAtBaseURL(ctx, loader, annasBaseURL, query, timeout, options)
 }
 
 func findArticlesAtBaseURL(ctx context.Context, loader pageLoader, annasBaseURL, query string, timeout time.Duration) ([]*Paper, error) {
-	l := logger.GetLogger()
-	fullURL := fmt.Sprintf(AnnasSearchEndpointFormat, annasBaseURL, url.QueryEscape(query), "journal")
+	return findArticlePagesAtBaseURL(ctx, loader, annasBaseURL, query, timeout, SearchOptions{Page: 1, Pages: 1})
+}
 
-	html, err := loader.Load(ctx, fullURL, timeout)
+func findArticlePagesAtBaseURL(ctx context.Context, loader pageLoader, annasBaseURL, query string, timeout time.Duration, options SearchOptions) ([]*Paper, error) {
+	l := logger.GetLogger()
+	fullURL := searchStartURL(annasBaseURL, query, url.Values{"index": {"journals"}}, options.Page)
+	papers := make([]*Paper, 0)
+	seen := make(map[string]struct{})
+	err := loadSearchPages(ctx, loader, fullURL, timeout, options, func(html string) (int, error) {
+		pagePapers, _, err := parseArticleSearchHTML(html, annasBaseURL, l)
+		if err != nil {
+			return 0, err
+		}
+		for _, paper := range pagePapers {
+			if _, exists := seen[paper.Hash]; !exists {
+				seen[paper.Hash] = struct{}{}
+				papers = append(papers, paper)
+			}
+		}
+		return len(pagePapers), nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to load article search page: %w", err)
-	}
-	papers, totalElements, err := parseArticleSearchHTML(html, annasBaseURL, l)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse article search page: %w", err)
+		return nil, fmt.Errorf("failed to search articles: %w", err)
 	}
 
 	l.Info("Article search completed",
-		zap.Int("totalElements", totalElements),
 		zap.Int("validPapers", len(papers)),
 	)
 	return papers, nil

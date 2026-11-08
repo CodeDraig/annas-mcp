@@ -122,7 +122,7 @@ func TestFindBooksLoadsAndParsesVerifiedHTML(t *testing.T) {
 	if len(books) != 1 || books[0].Hash != "bookhash" {
 		t.Fatalf("unexpected books: %+v", books)
 	}
-	if len(loader.urls) != 1 || loader.urls[0] != "https://annas-archive.test/search?q=machine+learning&content=book_any" {
+	if len(loader.urls) != 1 || loader.urls[0] != "https://annas-archive.test/search?content=book_nonfiction&content=book_fiction&content=book_unknown&q=machine+learning" {
 		t.Fatalf("unexpected loader URLs: %v", loader.urls)
 	}
 	if loader.timeouts[0] != 3*time.Second {
@@ -141,7 +141,7 @@ func TestFindArticlesLoadsAndParsesVerifiedHTML(t *testing.T) {
 	if len(papers) != 1 || papers[0].Hash != "paperhash" {
 		t.Fatalf("unexpected papers: %+v", papers)
 	}
-	if len(loader.urls) != 1 || !strings.Contains(loader.urls[0], "content=journal") {
+	if len(loader.urls) != 1 || !strings.Contains(loader.urls[0], "index=journals") {
 		t.Fatalf("unexpected loader URLs: %v", loader.urls)
 	}
 }

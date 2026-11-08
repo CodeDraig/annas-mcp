@@ -168,6 +168,32 @@ the identifier. Returned DOI metadata preserves the supplied identifier.
 | Look up an article by DOI | `article-search` | `annas-cli article-search "10.1038/nature12345"` |
 | Download an article by DOI | `article-download` | `annas-cli article-download "10.1038/nature12345"` |
 
+### Search pages
+
+Book and keyword article searches fetch one page by default. Use `--pages` to
+request up to that many pages, or `--page` to start later in the results:
+
+```bash
+annas-cli book-search "machine learning" --pages 3
+annas-cli book-search "machine learning" --page 4 --pages 2
+annas-cli article-search "neural networks" --pages 3
+```
+
+The second example requests pages 4 and 5 when the site provides both. The CLI
+follows the site's next-page control and stops early when no next page is
+available or a page contains no results. Results are combined into the existing
+JSON result array, with duplicate hashes removed while preserving their first
+occurrence. Each page uses the configured request timeout, and Ctrl-C cancels
+the remaining requests. A page failure returns an error identifying that page;
+it does not emit a partial success object.
+
+`--page` must be between 1 and 100, matching the current site's page limit, and
+`--pages` must be positive. Pagination applies to keyword searches; DOI lookups
+remain single-article operations. Book searches use the site's current fiction,
+nonfiction, and unknown-type book categories. Keyword article searches use the
+journals index. These replace the obsolete `book_any` and `journal` filters,
+which returned partial matches without primary result pages.
+
 ## Tag maintenance
 
 Run `bash scripts/manage-tag.sh recreate` from the repository root to replace the

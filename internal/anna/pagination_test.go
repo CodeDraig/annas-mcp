@@ -70,6 +70,50 @@ func TestArticleSearchPaginationStopsAtRequestedCount(t *testing.T) {
 	}
 }
 
+func TestAllPagesFollowsThroughLastPage(t *testing.T) {
+	t.Parallel()
+	for _, options := range []SearchOptions{
+		{Page: 1, Pages: 1, AllPages: true},
+		{Page: 3, AllPages: true},
+	} {
+		filters := url.Values{"content": {"book_nonfiction", "book_fiction", "book_unknown"}}
+		loader := &fakePageLoader{}
+		for page := options.Page; page <= 5; page++ {
+			next := ""
+			if page < 5 {
+				next = searchStartURL("annas-archive.test", "books", filters, page+1)
+			}
+			loader.responses = append(loader.responses, loaderResponse{html: searchResultHTML(fmt.Sprint(page), "Book", "Author", "Publisher", "✅ English [en] · PDF · 1MB") +
+				searchResultHTML("shared", "Shared result", "Author", "Publisher", "✅ English [en] · PDF · 1MB") +
+				searchPaginationHTML(page, next),
+			})
+		}
+		books, err := findBookPagesAtBaseURL(context.Background(), loader, "annas-archive.test", "books", time.Second, options)
+		wantPages := 6 - options.Page
+		if err != nil || len(loader.urls) != wantPages || len(books) != wantPages+1 {
+			t.Fatalf("all pages with %+v: URLs=%v results=%d err=%v", options, loader.urls, len(books), err)
+		}
+		last, err := url.Parse(loader.urls[len(loader.urls)-1])
+		if err != nil || last.Query().Get("page") != "5" {
+			t.Fatalf("all pages stopped at %v, err=%v", last, err)
+		}
+	}
+}
+
+func TestAllPagesHonorsSitePageLimit(t *testing.T) {
+	t.Parallel()
+	first := fmt.Sprintf("https://annas-archive.test/search?q=books&page=%d", maxSearchPage-1)
+	last := fmt.Sprintf("https://annas-archive.test/search?q=books&page=%d", maxSearchPage)
+	loader := &fakePageLoader{responses: []loaderResponse{
+		{html: searchPaginationHTML(maxSearchPage-1, last)},
+		{html: searchPaginationHTML(maxSearchPage, fmt.Sprintf("https://annas-archive.test/search?q=books&page=%d", maxSearchPage+1))},
+	}}
+	err := loadSearchPages(context.Background(), loader, first, time.Second, SearchOptions{Page: maxSearchPage - 1, AllPages: true}, func(string) (int, error) { return 1, nil })
+	if err != nil || len(loader.urls) != 2 {
+		t.Fatalf("site limit: URLs=%v err=%v", loader.urls, err)
+	}
+}
+
 func TestPaginatedSearchFailureDoesNotReturnPartialSuccess(t *testing.T) {
 	t.Parallel()
 	next := searchStartURL("annas-archive.test", "books", url.Values{"content": {"book_nonfiction", "book_fiction", "book_unknown"}}, 2)
@@ -117,7 +161,7 @@ func TestNextSearchPageRejectsChangedTargetAndLoops(t *testing.T) {
 
 func TestSearchPaginationRejectsInvalidOptionsBeforeLoading(t *testing.T) {
 	t.Parallel()
-	for _, options := range []SearchOptions{{Page: 0, Pages: 1}, {Page: -1, Pages: 1}, {Page: 101, Pages: 1}, {Page: 1, Pages: 0}, {Page: 1, Pages: -1}} {
+	for _, options := range []SearchOptions{{Page: 0, Pages: 1}, {Page: -1, Pages: 1}, {Page: 101, Pages: 1}, {Page: 1, Pages: 0}, {Page: 1, Pages: -1}, {Page: 1, Pages: 2, AllPages: true}} {
 		loader := &fakePageLoader{}
 		if _, err := findBookPagesAtBaseURL(context.Background(), loader, "annas-archive.test", "books", time.Second, options); err == nil {
 			t.Errorf("accepted options %+v", options)

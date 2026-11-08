@@ -11,16 +11,25 @@ import (
 	"github.com/PuerkitoBio/goquery"
 )
 
-// SearchOptions selects a starting page and an upper bound on pages to fetch.
+const maxSearchPage = 100
+
+// SearchOptions selects a starting page and either a page count or all pages.
 type SearchOptions struct {
-	Page  int
-	Pages int
+	Page     int
+	Pages    int
+	AllPages bool
 }
 
 func (o SearchOptions) Validate() error {
 	// The site's search route clamps page numbers to this range.
-	if o.Page < 1 || o.Page > 100 {
-		return fmt.Errorf("page must be between 1 and 100")
+	if o.Page < 1 || o.Page > maxSearchPage {
+		return fmt.Errorf("page must be between 1 and %d", maxSearchPage)
+	}
+	if o.AllPages {
+		if o.Pages != 0 && o.Pages != 1 {
+			return fmt.Errorf("all-pages cannot be combined with a page count")
+		}
+		return nil
 	}
 	if o.Pages < 1 {
 		return fmt.Errorf("pages must be greater than zero")
@@ -34,7 +43,11 @@ func loadSearchPages(ctx context.Context, loader pageLoader, firstURL string, ti
 	}
 	currentURL := firstURL
 	pageNumber := options.Page
-	for loaded := 0; loaded < options.Pages; loaded++ {
+	pageLimit := options.Pages
+	if options.AllPages {
+		pageLimit = maxSearchPage - options.Page + 1
+	}
+	for loaded := 0; loaded < pageLimit; loaded++ {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -58,7 +71,7 @@ func loadSearchPages(ctx context.Context, loader pageLoader, firstURL string, ti
 		if err != nil {
 			return fmt.Errorf("parse search results on page %d: %w", pageNumber, err)
 		}
-		if count == 0 || loaded == options.Pages-1 {
+		if count == 0 || loaded == pageLimit-1 {
 			return nil
 		}
 		next, err := nextSearchPage(document, currentURL, pageNumber)
@@ -96,7 +109,7 @@ func nextSearchPage(document *goquery.Document, currentURL string, currentPage i
 	}
 	query := next.Query()
 	page, err := strconv.Atoi(query.Get("page"))
-	if err != nil || page != currentPage+1 || page > 100 {
+	if err != nil || page != currentPage+1 || page > maxSearchPage {
 		return "", fmt.Errorf("next-page URL does not point to page %d", currentPage+1)
 	}
 	searchQuery := current.Query().Get("q")

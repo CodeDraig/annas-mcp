@@ -177,6 +177,10 @@ request up to that many pages, or `--page` to start later in the results:
 annas-cli book-search "machine learning" --pages 3
 annas-cli book-search "machine learning" --page 4 --pages 2
 annas-cli article-search "neural networks" --pages 3
+
+# Fetch all available pages, or all remaining pages starting at page 4
+annas-cli book-search "machine learning" --all-pages
+annas-cli article-search "neural networks" --page 4 --all-pages
 ```
 
 The second example requests pages 4 and 5 when the site provides both. The CLI
@@ -188,8 +192,10 @@ the remaining requests. A page failure returns an error identifying that page;
 it does not emit a partial success object.
 
 `--page` must be between 1 and 100, matching the current site's page limit, and
-`--pages` must be positive. Pagination applies to keyword searches; DOI lookups
-remain single-article operations. Book searches use the site's current fiction,
+`--pages` must be positive. `--all-pages` fetches every available page from the
+starting page through the site's last page, within that same 100-page limit.
+It cannot be combined with `--pages`. Pagination applies to keyword searches;
+DOI lookups remain single-article operations. Book searches use the site's current fiction,
 nonfiction, and unknown-type book categories. Keyword article searches use the
 journals index. These replace the obsolete `book_any` and `journal` filters,
 which returned partial matches without primary result pages.

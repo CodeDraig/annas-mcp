@@ -114,6 +114,8 @@ func newBookSearchCommand(timeout *time.Duration, human *bool, l *zap.Logger, fi
 	}
 	command.Flags().IntVar(&options.Page, "page", 1, "Starting search page (1-100)")
 	command.Flags().IntVar(&options.Pages, "pages", 1, "Maximum number of search pages to fetch")
+	command.Flags().BoolVar(&options.AllPages, "all-pages", false, "Fetch all available pages from the starting page")
+	command.MarkFlagsMutuallyExclusive("pages", "all-pages")
 	return command
 }
 
@@ -175,7 +177,7 @@ func newArticleSearchCommand(timeout *time.Duration, human *bool, l *zap.Logger,
 			l.Info("Article search command called", zap.String("query", query))
 
 			if strings.HasPrefix(strings.TrimSpace(query), "10.") {
-				if options.Page != 1 || options.Pages != 1 {
+				if options.Page != 1 || options.Pages != 1 || options.AllPages {
 					return fmt.Errorf("pagination flags apply to keyword searches, not DOI lookup")
 				}
 				paper, err := lookupDOI(cmd.Context(), query, *timeout)
@@ -200,6 +202,8 @@ func newArticleSearchCommand(timeout *time.Duration, human *bool, l *zap.Logger,
 	}
 	command.Flags().IntVar(&options.Page, "page", 1, "Starting search page (1-100); keyword searches only")
 	command.Flags().IntVar(&options.Pages, "pages", 1, "Maximum number of search pages to fetch; keyword searches only")
+	command.Flags().BoolVar(&options.AllPages, "all-pages", false, "Fetch all available pages from the starting page; keyword searches only")
+	command.MarkFlagsMutuallyExclusive("pages", "all-pages")
 	return command
 }
 

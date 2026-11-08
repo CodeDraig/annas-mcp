@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -131,22 +133,37 @@ func (b *ChromeBrowser) Load(ctx context.Context, rawURL string) (string, error)
 	if err != nil {
 		return "", err
 	}
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		return "", fmt.Errorf("select Chrome debugging port: %w", err)
+	}
+	debuggingPort := listener.Addr().(*net.TCPAddr).Port
+	if err := listener.Close(); err != nil {
+		return "", fmt.Errorf("release Chrome debugging port: %w", err)
+	}
 
 	progress := b.Progress
 	if progress == nil {
 		progress = os.Stderr
 	}
-	_, _ = fmt.Fprintln(progress, "Anna's Archive requires browser verification; complete the check in the opened Chrome window.")
+	_, _ = fmt.Fprintln(progress, "Anna's Archive requires browser verification; waiting for Chrome. Complete the check in the opened window if prompted.")
 
 	allocatorOptions := append([]chromedp.ExecAllocatorOption{}, chromedp.DefaultExecAllocatorOptions[:]...)
 	allocatorOptions = append(allocatorOptions,
 		chromedp.Flag("headless", false),
+		// Both enable-automation and debugging port zero expose webdriver.
+		// Select an available nonzero loopback port for each browser launch.
+		chromedp.Flag("enable-automation", false),
+		chromedp.Flag("remote-debugging-address", "127.0.0.1"),
+		chromedp.Flag("remote-debugging-port", strconv.Itoa(debuggingPort)),
 		chromedp.UserDataDir(profile),
 	)
 	allocatorCtx, cancelAllocator := chromedp.NewExecAllocator(ctx, allocatorOptions...)
 	defer cancelAllocator()
 	browserCtx, cancelBrowser := chromedp.NewContext(allocatorCtx)
 	defer cancelBrowser()
+	// Let Chrome finish writing its profile before the process is canceled.
+	defer chromedp.Cancel(browserCtx)
 
 	return loadVerifiedPage(browserCtx, rawURL)
 }

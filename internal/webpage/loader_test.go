@@ -214,6 +214,42 @@ func TestChromeBrowserRequiresDisplayBeforeCreatingProfile(t *testing.T) {
 	}
 }
 
+func TestChromeBrowserDoesNotExposeWebdriver(t *testing.T) {
+	if _, err := exec.LookPath("google-chrome"); err != nil {
+		t.Skip("Chrome is not installed")
+	}
+	if !interactiveDisplayAvailable() {
+		t.Skip("a graphical display is required")
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<!doctype html><html><head><title>Browser options</title></head><body><script>document.documentElement.setAttribute("data-webdriver", String(navigator.webdriver));</script></body></html>`)
+	}))
+	t.Cleanup(server.Close)
+
+	// Concurrent launches must not depend on one fixed debugging port.
+	for _, name := range []string{"first", "second"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			profile := t.TempDir()
+			browser := &ChromeBrowser{
+				Progress: io.Discard,
+				ProfilePath: func() (string, error) {
+					return profile, nil
+				},
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			html, err := browser.Load(ctx, server.URL)
+			if err != nil {
+				t.Fatalf("Load returned error: %v", err)
+			}
+			if !strings.Contains(html, `data-webdriver="false"`) {
+				t.Fatalf("browser did not report navigator.webdriver=false: %s", html)
+			}
+		})
+	}
+}
+
 func TestPrepareBrowserProfileUsesPrivatePermissions(t *testing.T) {
 	t.Parallel()
 

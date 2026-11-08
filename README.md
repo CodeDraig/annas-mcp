@@ -87,10 +87,13 @@ API use a separate request and can follow redirects to download hosts.
 ### Browser Verification
 
 The CLI tries ordinary HTTP first. If the returned page is specifically a
-DDoS-Guard challenge, it opens a visible Chrome or Chromium window. Complete
-the check in that window and leave the command running; the CLI captures the
-verified page and continues normally. Generic HTTP 403 responses do not launch
-the browser.
+DDoS-Guard challenge, it opens a visible Chrome or Chromium window and waits for
+verification. Chrome starts without `--enable-automation` and uses a selected
+nonzero loopback debugging port so these launch options do not set
+`navigator.webdriver`. Verification may finish automatically. If prompted,
+complete the check in that window and leave the command running; the CLI
+captures the verified page and continues normally. Generic HTTP 403 responses
+do not launch the browser.
 
 Browser state is isolated from the regular browser profile and retained at:
 

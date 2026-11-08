@@ -95,6 +95,16 @@ complete the check in that window and leave the command running; the CLI
 captures the verified page and continues normally. Generic HTTP 403 responses
 do not launch the browser.
 
+If an existing browser profile remains on DDoS-Guard verification for 45 seconds,
+the CLI closes Chrome, archives that profile, and retries once with a fresh
+profile. For shorter request timeouts, the challenge wait is capped at half the
+remaining request time. The retry shares the original request deadline
+and still allows manual verification; it does not trigger another profile reset.
+Cancellation, closing Chrome, startup errors, and ordinary HTTP errors do not
+reset the profile.
+After a request ends, Chrome is given up to two seconds to close gracefully and
+finish writing its profile before it is canceled.
+
 Browser state is isolated from the regular browser profile and retained at:
 
 ```text
@@ -102,6 +112,9 @@ $XDG_CONFIG_HOME/annas-cli/browser-profile
 ```
 
 or `$HOME/.config/annas-cli/browser-profile` when `XDG_CONFIG_HOME` is unset.
+Recovered profiles are preserved beside it under `browser-profile.stale-*/profile`;
+the CLI reports the exact archive path and never deletes those archives. Locked
+profiles and profile symlinks are not archived automatically.
 The directory is private to the user. The CLI never loads `ANNAS_SECRET_KEY`
 into this browser profile or sends it during search. If Chrome, a graphical
 display, or manual verification is unavailable, the command exits nonzero with
